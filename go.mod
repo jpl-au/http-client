@@ -1,6 +1,6 @@
 module github.com/jpl-au/http-client
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/andybalholm/brotli v1.2.0
