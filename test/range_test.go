@@ -678,3 +678,31 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 		})
 	}
 }
+
+func TestResumeProgressCoversWholeFile(t *testing.T) {
+	server := newResumeServer(t, "abcdef", `"v1"`)
+	path := filepath.Join(t.TempDir(), "partial.bin")
+	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls [][2]int64
+	opt := options.New().
+		Resume(path, `"v1"`).
+		OnDownloadProgress(func(current, total int64) {
+			calls = append(calls, [2]int64{current, total})
+		})
+	if _, err := client.Get(server.URL, opt); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if len(calls) == 0 {
+		t.Fatal("no progress reported")
+	}
+	if first := calls[0]; first[0] <= 3 {
+		t.Errorf("first progress = %d, want more than the 3 bytes already on disk", first[0])
+	}
+	if last := calls[len(calls)-1]; last != [2]int64{6, 6} {
+		t.Errorf("last progress = %v, want [6 6]", last)
+	}
+}

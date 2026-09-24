@@ -461,15 +461,17 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	// A resumed download appends to the partial file, so a partial response
 	// must continue the file exactly where it ends. Any other successful
 	// response carries the whole representation and replaces the file.
+	var resumed *response.ContentRange
 	expected := int64(-1)
 	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode < http.StatusMultipleChoices {
 		if r.StatusCode == http.StatusPartialContent {
-			length, err := resumeLength(r, opt.Range.Start, opt.Range.Validator)
+			cr, err := resumeRange(r, opt.Range.Start, opt.Range.Validator)
 			if err != nil {
 				resp.Error = err
 				return resp, err
 			}
-			expected = length
+			resumed = cr
+			expected = cr.End - cr.Start + 1
 		} else {
 			opt.Range.IsResume = false
 		}
@@ -495,13 +497,24 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	totalSize := r.ContentLength
+	onDownload := opt.Progress.OnDownload
+
+	// Progress on a resumed download covers the whole file: the bytes already
+	// on disk count, and the total is the length of the representation.
+	if onDownload != nil && resumed != nil {
+		totalSize = resumed.Total
+		report, offset := onDownload, resumed.Start
+		onDownload = func(current, total int64) {
+			report(offset+current, total)
+		}
+	}
 
 	var reader io.Reader = decompressedBody
-	if opt.Progress.OnDownload != nil {
+	if onDownload != nil {
 		if encoding != "" {
 			totalSize = -1
 		}
-		reader = options.NewProgressReader(decompressedBody, totalSize, opt.Progress.OnDownload)
+		reader = options.NewProgressReader(decompressedBody, totalSize, onDownload)
 	}
 
 	// Write no more than the range, so surplus bytes never reach the file.
@@ -563,30 +576,30 @@ func hasBody(r *http.Response) bool {
 	return true
 }
 
-// resumeLength returns the length of a partial response to a resumed download.
+// resumeRange returns the range of a partial response to a resumed download.
 // It returns an error wrapping ErrRangeMismatch unless the response has a valid
 // bytes Content-Range that starts at offset, the end of the partial file, and
 // belongs to the representation the file holds: no content encoding, and the
 // same ETag as validator when both are ETags.
-func resumeLength(r *http.Response, offset int64, validator string) (int64, error) {
+func resumeRange(r *http.Response, offset int64, validator string) (*response.ContentRange, error) {
 	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
-		return 0, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
+		return nil, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
 	}
 	if etag := r.Header.Get("ETag"); etag != "" && strings.HasPrefix(validator, `"`) && etag != validator {
-		return 0, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, validator)
+		return nil, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, validator)
 	}
 
 	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
 	if err != nil {
-		return 0, fmt.Errorf("%w: %w", ErrRangeMismatch, err)
+		return nil, fmt.Errorf("%w: %w", ErrRangeMismatch, err)
 	}
 	if cr.Unit != "bytes" {
-		return 0, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
+		return nil, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
 	}
 	if cr.Start != offset {
-		return 0, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, offset)
+		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, offset)
 	}
-	return cr.End - cr.Start + 1, nil
+	return cr, nil
 }
 
 // checkRangeLength returns an error wrapping ErrRangeMismatch when the body
