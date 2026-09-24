@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -323,9 +324,7 @@ func (opt *Option) Merge(src *Option) *Option {
 		opt.Header = make(http.Header)
 	}
 	// Replaces any existing values
-	for key, values := range src.Header {
-		opt.Header[key] = values
-	}
+	maps.Copy(opt.Header, src.Header)
 
 	// Merge Cookies
 	for _, sc := range src.Cookies {

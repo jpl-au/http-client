@@ -288,10 +288,7 @@ func setupTestServer(t *testing.T) *httptest.Server {
 					http.Error(w, "Invalid range", http.StatusRequestedRangeNotSatisfiable)
 					return
 				}
-				start = totalSize - suffix
-				if start < 0 {
-					start = 0
-				}
+				start = max(totalSize-suffix, 0)
 				end = totalSize - 1
 			} else if strings.HasSuffix(rangeSpec, "-") {
 				// Open-ended range: "N-" means from N to end

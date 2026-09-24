@@ -47,7 +47,7 @@ func TestMultipartUpload(t *testing.T) {
 				t.Fatalf("unable to open %s: %s", largef, err)
 			}
 
-			payload := map[string]interface{}{
+			payload := map[string]any{
 				smallf: s,
 				largef: l,
 			}

@@ -63,7 +63,7 @@ func PostFile(url string, filename string, opts ...*options.Option) (response.Re
 
 // PostMultipartUpload performs a POST multipart form-data upload request to the specified URL.
 // This is the most common method for file uploads and creating new resources with file attachments.
-func PostMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
+func PostMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPost, url, payload, opts...)
 }
 
@@ -106,7 +106,7 @@ func PutFile(url string, filename string, opts ...*options.Option) (response.Res
 // PutMultipartUpload performs a PUT multipart form-data upload request to the specified URL.
 // This method is less common but can be used when updating an entire resource with new data,
 // including file attachments.
-func PutMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
+func PutMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPut, url, payload, opts...)
 }
 
@@ -149,7 +149,7 @@ func PatchFile(url string, filename string, opts ...*options.Option) (response.R
 // PatchMultipartUpload performs a PATCH multipart form-data upload request to the specified URL.
 // This method can be used for partial updates to a resource, which might include updating or
 // adding new file attachments.
-func PatchMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
+func PatchMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPatch, url, payload, opts...)
 }
 
