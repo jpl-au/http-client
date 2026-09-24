@@ -883,3 +883,34 @@ func TestResumeRejectsDifferentLastModifiedWithDateValidator(t *testing.T) {
 		t.Errorf("destination = %q, want it absent", got)
 	}
 }
+
+func TestIdentityEncodingIsUnencoded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "identity")
+		if r.Header.Get("Range") == "" {
+			_, _ = w.Write([]byte("abcdef"))
+			return
+		}
+		w.Header().Set("Content-Range", "bytes 3-5/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("def"))
+	}))
+	defer server.Close()
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("plain request failed: %v", err)
+	}
+	if resp.String() != "abcdef" {
+		t.Errorf("body = %q, want %q", resp.String(), "abcdef")
+	}
+
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "abc")
+	if _, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`))); err != nil {
+		t.Fatalf("resumed request failed: %v", err)
+	}
+	if got := contentOrAbsent(t, path); got != "abcdef" {
+		t.Errorf("file = %q, want %q", got, "abcdef")
+	}
+}

@@ -90,7 +90,8 @@ func (opt *Option) NewDecompressor(r io.ReadCloser, encoding string) (io.ReadClo
 	opt.mu.RUnlock()
 
 	switch encoding {
-	case "":
+	case "", "identity":
+		// identity means no encoding (RFC 9110, section 8.4.1).
 		return r, nil
 	case string(CompressionGzip):
 		return gzip.NewReader(r)
