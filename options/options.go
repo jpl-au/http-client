@@ -469,6 +469,7 @@ func (opt *Option) Merge(src *Option) *Option {
 // Clone creates an independent deep copy of the Option.
 //
 // This method creates a copy of all configuration including:
+//   - Client selection (the *http.Client itself is shared, not copied)
 //   - Headers and cookies (deep copied)
 //   - Logging, compression, redirect, and transport settings
 //   - Progress callbacks and buffer sizes
@@ -484,6 +485,8 @@ func (opt *Option) Clone() *Option {
 	opt.mu.RLock()
 	clone.initialised = opt.initialised
 	clone.explicit = opt.explicit
+	clone.useSharedClient = opt.useSharedClient
+	clone.client = opt.client
 	// Deep clone the http.Header
 	clone.Header = make(http.Header)
 	for key, values := range opt.Header {

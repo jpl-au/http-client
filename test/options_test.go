@@ -1,11 +1,18 @@
 package client_test
 
 import (
+	"context"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestOptionsMergeInitialised tests that Merge respects the initialised flag for boolean fields
@@ -115,4 +122,65 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		assert.Equal(t, 5, dest.Redirect.Max, "MaxRedirects should be 5 after merge")
 	})
+}
+
+// TestReusedOptionSendsCookiesOnce checks that reusing one Option for several
+// package-level requests does not accumulate cookies.
+func TestReusedOptionSendsCookiesOnce(t *testing.T) {
+	var cookies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies = append(cookies, r.Header.Get("Cookie"))
+	}))
+	defer server.Close()
+
+	opt := options.New().AddCookie(&http.Cookie{Name: "session", Value: "audit"})
+	for range 3 {
+		_, err := client.Get(server.URL, opt)
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, []string{"session=audit", "session=audit", "session=audit"}, cookies)
+}
+
+// TestPackageFunctionsLeaveOptionUnchanged checks that package-level functions
+// do not write request state into the caller's Option.
+func TestPackageFunctionsLeaveOptionUnchanged(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	opt := options.New()
+
+	_, err := client.Get(server.URL+"/echo", opt)
+	require.NoError(t, err)
+	_, err = client.PostFormData(server.URL+"/echo", map[string]string{"k": "v"}, opt)
+	require.NoError(t, err)
+	_, err = client.PostFile(server.URL+"/upload", smallf, opt)
+	require.NoError(t, err)
+	_, err = client.PostMultipartUpload(server.URL+"/upload/multipart", map[string]any{"k": "v"}, opt)
+	require.NoError(t, err)
+
+	assert.Empty(t, opt.Header, "request headers should not be written into the caller's Option")
+	assert.False(t, opt.HasFile(), "PostFile should not prepare a file on the caller's Option")
+}
+
+// TestPackageFunctionsUseOptionClient checks that a client set on an Option
+// carries package-level requests.
+func TestPackageFunctionsUseOptionClient(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	var dials atomic.Int32
+	dialer := &net.Dialer{}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials.Add(1)
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+	defer transport.CloseIdleConnections()
+
+	_, err := client.Get(server.URL+"/echo", options.New().SetClient(&http.Client{Transport: transport}))
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(1), dials.Load())
 }

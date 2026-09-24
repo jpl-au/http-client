@@ -15,7 +15,7 @@ import (
 // MultipartUpload performs a multipart form-data upload request to the specified URL.
 // It supports file uploads and other form fields.
 func MultipartUpload(method, url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 

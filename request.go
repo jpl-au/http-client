@@ -42,8 +42,9 @@ func (s *requestState) redirectLimitReached(max int) bool {
 // to helper functions for transport configuration, payload preparation,
 // redirect handling, and response processing.
 func doRequest(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
-	// Initialise options, combining defaults with user-provided options
-	opt := options.New(opts...)
+	// Work on a private copy: the request writes headers and state into its
+	// options, and the caller may reuse theirs for later requests.
+	opt := options.New(opts...).Clone()
 
 	// Create fresh request state for this request chain
 	state := &requestState{}

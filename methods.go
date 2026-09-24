@@ -39,7 +39,7 @@ func Post(url string, payload any, opts ...*options.Option) (response.Response, 
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 	opt.AddHeader(ContentType, URLencoded)
 
 	return Post(url, encodeFormData(payload), opt)
@@ -51,7 +51,7 @@ func PostFormData(url string, payload map[string]string, opts ...*options.Option
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 
 	err := opt.PrepareFile(filename)
 	if err != nil {
@@ -81,7 +81,7 @@ func Put(url string, payload any, opts ...*options.Option) (response.Response, e
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 	opt.AddHeader(ContentType, URLencoded)
 
 	return Put(url, encodeFormData(payload), opt)
@@ -93,7 +93,7 @@ func PutFormData(url string, payload map[string]string, opts ...*options.Option)
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 
 	err := opt.PrepareFile(filename)
 	if err != nil {
@@ -124,7 +124,7 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 	opt.AddHeader(ContentType, URLencoded)
 
 	return Patch(url, encodeFormData(payload), opt)
@@ -136,7 +136,7 @@ func PatchFormData(url string, payload map[string]string, opts ...*options.Optio
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
+	opt := options.New(opts...).Clone()
 
 	err := opt.PrepareFile(filename)
 	if err != nil {
