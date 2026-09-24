@@ -2,11 +2,12 @@ package options
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 // ResponseWriterType defines how the HTTP response body should be handled.
@@ -69,6 +70,34 @@ func (w *FileWriter) Discard() error {
 	return errors.Join(w.File.Close(), os.Remove(w.Name()))
 }
 
+// createFor creates the new file name, which will later replace dest.
+// When dest exists, the file takes its permissions, so publishing a download
+// never changes who can read it. Otherwise the file gets 0666 less the process
+// umask, as os.Create would give.
+func createFor(name, dest string) (*os.File, error) {
+	perm := fs.FileMode(0o666)
+	info, err := os.Stat(dest)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	exists := err == nil
+	if exists {
+		perm = info.Mode().Perm()
+	}
+
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return nil, err
+	}
+	// The umask can narrow perm; the replacement must match dest exactly.
+	if exists {
+		if err := file.Chmod(perm); err != nil {
+			return nil, errors.Join(err, file.Close(), os.Remove(name))
+		}
+	}
+	return file, nil
+}
+
 // InitialiseWriter sets up the appropriate writer based on the ResponseWriter configuration.
 // Returns an error if the writer type is invalid or if required parameters are missing.
 // When resuming a download (Range.IsResume is true), files are opened in append mode.
@@ -96,12 +125,9 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		} else {
 			// The temporary file must be in the destination's directory:
 			// a rename across file systems fails.
-			file, err := os.CreateTemp(filepath.Dir(filePath), filepath.Base(filePath)+".*.part")
+			file, err := createFor(filePath+"."+rand.Text()+".part", filePath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create file: %w", err)
-			}
-			if err := file.Chmod(0644); err != nil {
-				return nil, errors.Join(fmt.Errorf("failed to set file mode: %w", err), file.Close(), os.Remove(file.Name()))
 			}
 			writer = &FileWriter{File: file, path: filePath}
 		}
