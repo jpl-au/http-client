@@ -314,9 +314,12 @@ func (opt *Option) SetContext(ctx context.Context) *Option {
 // Settings from the source Option take precedence over existing settings.
 // This includes headers, cookies, compression settings, and all other configuration options.
 func (opt *Option) Merge(src *Option) *Option {
-	if src == nil {
+	if src == nil || src == opt {
 		return opt
 	}
+	// Read from a private copy so that only one Option is locked at a time.
+	// Holding both locks would deadlock when two Options merge into each other.
+	src = src.Clone()
 	opt.mu.Lock()
 	// Merge Headers
 	if opt.Header == nil {
@@ -446,6 +449,7 @@ func (opt *Option) Clone() *Option {
 	clone := New()
 
 	opt.mu.RLock()
+	clone.initialised = opt.initialised
 	// Deep clone the http.Header
 	clone.Header = make(http.Header)
 	for key, values := range opt.Header {

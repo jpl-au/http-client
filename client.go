@@ -116,7 +116,7 @@ func (c *Client) UpdateGlobalOptions(opts *options.Option) {
 // global configuration. This is used internally for per-request option
 // merging and can be used externally to create request-specific variations.
 func (c *Client) CloneOptions() *options.Option {
-	return c.global.Clone()
+	return c.GlobalOptions().Clone()
 }
 
 // Clear clears any Responses that have already been made and kept.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
@@ -572,4 +573,86 @@ func TestAllMethodsConcurrent(t *testing.T) {
 
 		wg.Wait()
 	})
+}
+
+// TestClientUpdateGlobalOptionsRace checks that replacing a Client's global options
+// is safe while other goroutines clone them.
+func TestClientUpdateGlobalOptionsRace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := client.New()
+
+		var wg sync.WaitGroup
+
+		wg.Go(func() {
+			for range raceIterations {
+				_ = c.CloneOptions()
+			}
+		})
+
+		wg.Go(func() {
+			for range raceIterations {
+				c.UpdateGlobalOptions(options.New())
+			}
+		})
+
+		wg.Wait()
+	})
+}
+
+// TestMergeSourceRace checks that Merge reads its source safely while
+// another goroutine changes that source.
+func TestMergeSourceRace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := options.New()
+		dst := options.New()
+
+		var wg sync.WaitGroup
+
+		wg.Go(func() {
+			for range raceIterations {
+				src.SetContext(context.Background())
+				src.AddHeader("K", "V")
+			}
+		})
+
+		wg.Go(func() {
+			for range raceIterations {
+				dst.Merge(src)
+			}
+		})
+
+		wg.Wait()
+	})
+}
+
+// TestMergeDoesNotDeadlock checks that self-merge and two Options merging
+// into each other at the same time both complete.
+func TestMergeDoesNotDeadlock(t *testing.T) {
+	a := options.New()
+	b := options.New()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Merge(a)
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for range raceIterations {
+				a.Merge(b)
+			}
+		})
+		wg.Go(func() {
+			for range raceIterations {
+				b.Merge(a)
+			}
+		})
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Merge deadlocked")
+	}
 }
