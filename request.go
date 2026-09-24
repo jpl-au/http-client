@@ -252,6 +252,11 @@ func applyTransportConfig(t *http.Transport, cfg options.TransportConfig) {
 	}
 }
 
+// uploadFile is a payload that names a file to upload. The file is prepared
+// inside the request, so a file that cannot be read fails like any other
+// request: the response records the error.
+type uploadFile string
+
 // payloadSource opens the request payload for one attempt.
 type payloadSource struct {
 	open       func() (io.Reader, error) // Returns the payload from its start.
@@ -262,6 +267,13 @@ type payloadSource struct {
 // preparePayload returns the source of the request payload, or nil when the
 // request has no payload. A payload is sent with any method.
 func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
+	if name, ok := payload.(uploadFile); ok {
+		if err := opt.PrepareFile(string(name)); err != nil {
+			return nil, err
+		}
+		payload = nil
+	}
+
 	// If payload is an *os.File and no file path is configured, extract the path
 	// so we can reopen the file fresh for redirects/retries instead of reusing
 	// the caller's handle (which may have an inconsistent position).

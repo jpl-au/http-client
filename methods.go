@@ -51,14 +51,7 @@ func PostFormData(url string, payload map[string]string, opts ...*options.Option
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...).Clone()
-
-	err := opt.PrepareFile(filename)
-	if err != nil {
-		return response.Response{}, err
-	}
-
-	return Post(url, nil, opt)
+	return doRequest(http.MethodPost, url, uploadFile(filename), opts...)
 }
 
 // PostMultipartUpload performs a POST multipart form-data upload request to the specified URL.
@@ -93,14 +86,7 @@ func PutFormData(url string, payload map[string]string, opts ...*options.Option)
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...).Clone()
-
-	err := opt.PrepareFile(filename)
-	if err != nil {
-		return response.Response{}, err
-	}
-
-	return Put(url, nil, opt)
+	return doRequest(http.MethodPut, url, uploadFile(filename), opts...)
 }
 
 // PutMultipartUpload performs a PUT multipart form-data upload request to the specified URL.
@@ -136,14 +122,7 @@ func PatchFormData(url string, payload map[string]string, opts ...*options.Optio
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...).Clone()
-
-	err := opt.PrepareFile(filename)
-	if err != nil {
-		return response.Response{}, err
-	}
-
-	return Patch(url, nil, opt)
+	return doRequest(http.MethodPatch, url, uploadFile(filename), opts...)
 }
 
 // PatchMultipartUpload performs a PATCH multipart form-data upload request to the specified URL.

@@ -257,14 +257,7 @@ func (c *Client) PostFormData(url string, payload map[string]string, opts ...*op
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := c.CloneOptions()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	if err := opt.PrepareFile(filename); err != nil {
-		return response.Response{}, err
-	}
-	return c.doRequest(http.MethodPost, url, nil, opt)
+	return c.doRequest(http.MethodPost, url, uploadFile(filename), opts...)
 }
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
@@ -296,14 +289,7 @@ func (c *Client) PutFormData(url string, payload map[string]string, opts ...*opt
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := c.CloneOptions()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	if err := opt.PrepareFile(filename); err != nil {
-		return response.Response{}, err
-	}
-	return c.doRequest(http.MethodPut, url, nil, opt)
+	return c.doRequest(http.MethodPut, url, uploadFile(filename), opts...)
 }
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
@@ -335,14 +321,7 @@ func (c *Client) PatchFormData(url string, payload map[string]string, opts ...*o
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	opt := c.CloneOptions()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	if err := opt.PrepareFile(filename); err != nil {
-		return response.Response{}, err
-	}
-	return c.doRequest(http.MethodPatch, url, nil, opt)
+	return c.doRequest(http.MethodPatch, url, uploadFile(filename), opts...)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.

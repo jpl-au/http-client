@@ -206,3 +206,27 @@ func TestClientSetMaxResponsesEnforcesLimit(t *testing.T) {
 	assert.Equal(t, 1, c.ResponseCount())
 	assert.NotNil(t, c.Response(resp.UniqueIdentifier), "the newest response should be kept")
 }
+
+// TestClientFileMethodsRecordPreparationErrors checks that a file that cannot be
+// prepared fails like any other request: the response records the error and
+// the Client keeps it in its history.
+func TestClientFileMethodsRecordPreparationErrors(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	c := client.New()
+	calls := []func() (response.Response, error){
+		func() (response.Response, error) { return c.PostFile(server.URL+"/upload", "missing.txt") },
+		func() (response.Response, error) { return c.PutFile(server.URL+"/upload", "missing.txt") },
+		func() (response.Response, error) { return c.PatchFile(server.URL+"/upload", "missing.txt") },
+		func() (response.Response, error) { return client.PostFile(server.URL+"/upload", "missing.txt") },
+	}
+	for _, call := range calls {
+		resp, err := call()
+		require.ErrorIs(t, err, options.ErrFileNotFound)
+		assert.Equal(t, err, resp.Error)
+		assert.NotEmpty(t, resp.UniqueIdentifier)
+	}
+
+	assert.Equal(t, 3, c.ResponseCount(), "each failed Client upload should be in the history")
+}
