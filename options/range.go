@@ -2,7 +2,6 @@ package options
 
 import (
 	"fmt"
-	"os"
 )
 
 // RangeConfig holds configuration for HTTP Range requests (RFC 7233).
@@ -102,9 +101,9 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 }
 
 // Resume configures the request to resume a download to an existing partial file.
-// It determines the current file size and sets the appropriate Range header to continue
-// downloading from where the previous download stopped. The file output is automatically
-// set to the same path, opened in append mode.
+// Each request reads the size of the file when it starts and asks for the bytes
+// from that offset, so the Option can be reused as the file grows. The response
+// is appended to the file at the same path.
 //
 // If the file doesn't exist or is empty, the download starts from the beginning.
 //
@@ -116,36 +115,9 @@ func (opt *Option) Resume(filepath string) *Option {
 	// Always set file output - either appending or creating fresh
 	opt.SetFileOutput(filepath)
 
-	info, err := os.Stat(filepath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist yet - no range needed, start fresh
-			opt.mu.Lock()
-			opt.Range.IsSet = false
-			opt.Range.IsResume = false
-			opt.mu.Unlock()
-			return opt
-		}
-		opt.Log("failed to stat file for resume", "error", err, "filepath", filepath)
-		return opt
-	}
-
-	size := info.Size()
-	if size == 0 {
-		// Empty file - no range needed, start fresh
-		opt.mu.Lock()
-		opt.Range.IsSet = false
-		opt.Range.IsResume = false
-		opt.mu.Unlock()
-		return opt
-	}
-
 	opt.mu.Lock()
-	opt.Range.Start = size
-	opt.Range.End = -1
-	opt.Range.Last = 0
-	opt.Range.IsSet = true
-	opt.Range.IsResume = true
+	opt.Range = RangeConfig{IsResume: true}
+	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt
 }

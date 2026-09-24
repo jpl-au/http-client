@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"sync"
@@ -54,6 +55,10 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	// Set up base response object
 	resp := response.New(url, method, payload, opt)
 
+	if err := setResumeRange(opt); err != nil {
+		return resp, err
+	}
+
 	source, err := preparePayload(method, payload, opt)
 	if err != nil {
 		return resp, err
@@ -97,6 +102,27 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 
 	// Process final response
 	return processResponse(httpResp, resp, opt, st)
+}
+
+// setResumeRange sets the range of a resumed download from the size of the
+// partial file when the request starts. A missing or empty file needs no range.
+func setResumeRange(opt *options.Option) error {
+	if !opt.Range.IsResume {
+		return nil
+	}
+	info, err := os.Stat(opt.ResponseWriter.FilePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to stat file for resume: %w", err)
+	}
+	if info.Size() > 0 {
+		opt.Range.Start = info.Size()
+		opt.Range.End = -1
+		opt.Range.IsSet = true
+	}
+	return nil
 }
 
 // configureClient returns an HTTP client for one request and a release function

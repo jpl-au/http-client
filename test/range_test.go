@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
@@ -426,5 +429,67 @@ func TestInvalidRangeIsRejected(t *testing.T) {
 				t.Errorf("err = %v, want ErrInvalidRange", err)
 			}
 		})
+	}
+}
+
+// resumeServer serves content with range support through http.ServeContent,
+// with the given ETag, and records the Range and If-Range headers it receives.
+type resumeServer struct {
+	*httptest.Server
+	mu       sync.Mutex
+	content  string
+	etag     string
+	ranges   []string
+	ifRanges []string
+}
+
+func newResumeServer(t *testing.T, content, etag string) *resumeServer {
+	s := &resumeServer{content: content, etag: etag}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.ranges = append(s.ranges, r.Header.Get("Range"))
+		s.ifRanges = append(s.ifRanges, r.Header.Get("If-Range"))
+		content, etag := s.content, s.etag
+		s.mu.Unlock()
+		if etag != "" {
+			w.Header().Set("ETag", etag)
+		}
+		http.ServeContent(w, r, "", time.Time{}, strings.NewReader(content))
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// received returns the Range and If-Range headers of each request so far.
+func (s *resumeServer) received() (ranges, ifRanges []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ranges...), append([]string(nil), s.ifRanges...)
+}
+
+func TestResumeOptionReuseUsesCurrentFileSize(t *testing.T) {
+	server := newResumeServer(t, "abcdef", "")
+	path := filepath.Join(t.TempDir(), "partial.bin")
+	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opt := options.New().Resume(path)
+	for range 2 {
+		if _, err := client.Get(server.URL, opt); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "abcdef" {
+		t.Errorf("file = %q, want %q", got, "abcdef")
+	}
+	ranges, _ := server.received()
+	if want := []string{"bytes=3-", "bytes=6-"}; !slices.Equal(ranges, want) {
+		t.Errorf("Range headers = %q, want %q", ranges, want)
 	}
 }
