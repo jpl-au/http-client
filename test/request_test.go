@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -311,4 +312,20 @@ func TestLoggingRedactsCredentials(t *testing.T) {
 	for _, secret := range []string{"secret-token", "secret-cookie", "secret-password", "secret-query"} {
 		assert.NotContains(t, out, secret)
 	}
+}
+
+func TestUploadEmptyFile(t *testing.T) {
+	var received []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "empty.txt")
+	require.NoError(t, os.WriteFile(path, nil, 0o644))
+
+	resp, err := client.PostFile(server.URL, path)
+	require.NoError(t, err, "an empty file is a valid upload")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, received)
 }

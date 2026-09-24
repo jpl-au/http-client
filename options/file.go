@@ -1,7 +1,9 @@
 package options
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -123,9 +125,10 @@ func (opt *Option) inferContentType(file *os.File, fileInfo os.FileInfo) error {
 	contentType := "application/octet-stream"
 
 	// Use a buffer to read a portion of the file for detecting its MIME type.
+	// An empty file reads io.EOF at once and is still a valid upload.
 	buffer := make([]byte, 512)
-	_, err := file.Read(buffer)
-	if err != nil {
+	n, err := file.Read(buffer)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 
@@ -135,7 +138,7 @@ func (opt *Option) inferContentType(file *os.File, fileInfo os.FileInfo) error {
 	}
 
 	// Try to detect MIME type from file content.
-	detectedContentType := http.DetectContentType(buffer)
+	detectedContentType := http.DetectContentType(buffer[:n])
 	if detectedContentType != "" {
 		contentType = detectedContentType
 	}
