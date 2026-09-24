@@ -272,11 +272,19 @@ type payloadSource struct {
 // preparePayload returns the source of the request payload, or nil when the
 // request has no payload. A payload is sent with any method.
 func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
-	if name, ok := payload.(uploadFile); ok {
-		if err := opt.PrepareFile(string(name)); err != nil {
+	switch v := payload.(type) {
+	case uploadFile:
+		if err := opt.PrepareFile(string(v)); err != nil {
 			return nil, err
 		}
 		payload = nil
+	case multipartForm:
+		body, contentType, err := v.encode()
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode multipart form: %w", err)
+		}
+		opt.AddHeader(ContentType, contentType)
+		payload = body
 	}
 
 	// If payload is an *os.File and no file path is configured, extract the path

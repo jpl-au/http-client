@@ -10,6 +10,7 @@ import (
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMultipartUpload(t *testing.T) {
@@ -77,4 +78,20 @@ func TestMultipartUpload(t *testing.T) {
 			assert.Equal(t, int64(largefile.Len()), fileInfo[largef])
 		})
 	}
+}
+
+// TestMultipartUploadRecordsFormErrors checks that a form that cannot be built
+// fails like any other request: the response records the error.
+func TestMultipartUploadRecordsFormErrors(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	file, err := os.Open(smallf)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	resp, err := client.PostMultipartUpload(server.URL+"/upload/multipart", map[string]any{"file": file})
+	require.Error(t, err, "a closed file cannot be read into the form")
+	assert.Equal(t, err, resp.Error)
+	assert.NotEmpty(t, resp.UniqueIdentifier)
 }
