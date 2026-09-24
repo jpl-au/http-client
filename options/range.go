@@ -13,7 +13,7 @@ type RangeConfig struct {
 	Start int64
 
 	// End is the ending byte offset (inclusive).
-	// When zero and Start is set, the range extends to the end of the resource.
+	// When -1, the range extends to the end of the resource.
 	End int64
 
 	// Last specifies the number of bytes from the end of the resource.
@@ -26,65 +26,77 @@ type RangeConfig struct {
 	// IsResume indicates this is a resume operation from an existing partial file.
 	// When true, the response writer should open in append mode.
 	IsResume bool
+
+	// err records an invalid range passed to a setter. The request fails with it.
+	err error
 }
 
 // RangeHeader returns the formatted Range header value for the request.
-// Returns an empty string if no range is configured.
-func (rc *RangeConfig) RangeHeader() string {
+// Returns an empty string if no range is configured, and an error wrapping
+// ErrInvalidRange if the range is invalid.
+func (rc *RangeConfig) RangeHeader() (string, error) {
 	if !rc.IsSet {
-		return ""
+		return "", nil
+	}
+	if rc.err != nil {
+		return "", rc.err
 	}
 
 	// Last N bytes: "bytes=-N"
 	if rc.Last > 0 {
-		return fmt.Sprintf("bytes=-%d", rc.Last)
+		return fmt.Sprintf("bytes=-%d", rc.Last), nil
+	}
+
+	if rc.Start < 0 {
+		return "", fmt.Errorf("%w: start %d is negative", ErrInvalidRange, rc.Start)
 	}
 
 	// Open-ended range: "bytes=N-" (from offset to end)
-	if rc.End == 0 {
-		return fmt.Sprintf("bytes=%d-", rc.Start)
+	if rc.End < 0 {
+		return fmt.Sprintf("bytes=%d-", rc.Start), nil
+	}
+
+	if rc.End < rc.Start {
+		return "", fmt.Errorf("%w: end %d is before start %d", ErrInvalidRange, rc.End, rc.Start)
 	}
 
 	// Explicit range: "bytes=N-M"
-	return fmt.Sprintf("bytes=%d-%d", rc.Start, rc.End)
+	return fmt.Sprintf("bytes=%d-%d", rc.Start, rc.End), nil
 }
 
 // SetRange configures an explicit byte range for partial content requests.
 // Both start and end are inclusive byte offsets (0-indexed).
 // For example, SetRange(0, 499) requests the first 500 bytes.
+// The request fails with ErrInvalidRange if start is negative or end is before start.
 func (opt *Option) SetRange(start, end int64) *Option {
 	opt.mu.Lock()
-	opt.Range.Start = start
-	opt.Range.End = end
-	opt.Range.Last = 0
-	opt.Range.IsSet = true
-	opt.Range.IsResume = false
+	opt.Range = RangeConfig{Start: start, End: end, IsSet: true}
+	if end < 0 {
+		opt.Range.err = fmt.Errorf("%w: end %d is negative", ErrInvalidRange, end)
+	}
 	opt.mu.Unlock()
 	return opt
 }
 
 // SetRangeFrom configures a range from the specified byte offset to the end of the resource.
 // For example, SetRangeFrom(1000) requests all bytes from offset 1000 onwards.
+// The request fails with ErrInvalidRange if offset is negative.
 func (opt *Option) SetRangeFrom(offset int64) *Option {
 	opt.mu.Lock()
-	opt.Range.Start = offset
-	opt.Range.End = 0
-	opt.Range.Last = 0
-	opt.Range.IsSet = true
-	opt.Range.IsResume = false
+	opt.Range = RangeConfig{Start: offset, End: -1, IsSet: true}
 	opt.mu.Unlock()
 	return opt
 }
 
 // SetRangeLast configures a range to request the last n bytes of the resource.
 // For example, SetRangeLast(1024) requests the last 1024 bytes.
+// The request fails with ErrInvalidRange if n is not positive.
 func (opt *Option) SetRangeLast(n int64) *Option {
 	opt.mu.Lock()
-	opt.Range.Start = 0
-	opt.Range.End = 0
-	opt.Range.Last = n
-	opt.Range.IsSet = true
-	opt.Range.IsResume = false
+	opt.Range = RangeConfig{Last: n, IsSet: true}
+	if n <= 0 {
+		opt.Range.err = fmt.Errorf("%w: suffix length %d is not positive", ErrInvalidRange, n)
+	}
 	opt.mu.Unlock()
 	return opt
 }
@@ -130,7 +142,7 @@ func (opt *Option) Resume(filepath string) *Option {
 
 	opt.mu.Lock()
 	opt.Range.Start = size
-	opt.Range.End = 0
+	opt.Range.End = -1
 	opt.Range.Last = 0
 	opt.Range.IsSet = true
 	opt.Range.IsResume = true

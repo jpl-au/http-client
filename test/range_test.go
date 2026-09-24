@@ -1,8 +1,12 @@
 package client_test
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
@@ -354,5 +358,73 @@ func TestRangeWithFileOutput(t *testing.T) {
 	want := largefile.Bytes()[1000:2000]
 	if string(got) != string(want) {
 		t.Error("file content doesn't match expected range")
+	}
+}
+
+// rangeRecorder returns a server that records the Range header of each request.
+func rangeRecorder(t *testing.T) (*httptest.Server, func() string) {
+	var mu sync.Mutex
+	var last string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		last = r.Header.Get("Range")
+		mu.Unlock()
+	}))
+	t.Cleanup(server.Close)
+	return server, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
+}
+
+func TestRangeHeaderValues(t *testing.T) {
+	server, received := rangeRecorder(t)
+
+	tests := []struct {
+		name string
+		opt  *options.Option
+		want string
+	}{
+		{"first byte", options.New().SetRange(0, 0), "bytes=0-0"},
+		{"bounded", options.New().SetRange(10, 19), "bytes=10-19"},
+		{"from offset", options.New().SetRangeFrom(0), "bytes=0-"},
+		{"from later offset", options.New().SetRangeFrom(500), "bytes=500-"},
+		{"last bytes", options.New().SetRangeLast(256), "bytes=-256"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := client.Get(server.URL, tt.opt); err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			if got := received(); got != tt.want {
+				t.Errorf("Range = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInvalidRangeIsRejected(t *testing.T) {
+	server, _ := rangeRecorder(t)
+
+	tests := []struct {
+		name string
+		opt  *options.Option
+	}{
+		{"negative start", options.New().SetRange(-1, 10)},
+		{"end before start", options.New().SetRange(10, 5)},
+		{"negative offset", options.New().SetRangeFrom(-1)},
+		{"zero suffix", options.New().SetRangeLast(0)},
+		{"negative suffix", options.New().SetRangeLast(-5)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.Get(server.URL, tt.opt)
+			if !errors.Is(err, options.ErrInvalidRange) {
+				t.Errorf("err = %v, want ErrInvalidRange", err)
+			}
+		})
 	}
 }

@@ -263,6 +263,23 @@ func prepareRequest(method, url string, source *payloadSource, opt *options.Opti
 		return nil, err
 	}
 
+	// Set headers and cookies
+	req.Header = opt.Header
+	for _, cookie := range opt.Cookies {
+		req.AddCookie(cookie)
+	}
+
+	// Set Range header for partial content requests
+	if opt.HasRange() {
+		value, err := opt.Range.RangeHeader()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Range", value)
+	}
+
+	// Build the body last: it opens the payload and may start the compression
+	// goroutine, so nothing after it may fail.
 	if source != nil {
 		if opt.Compression.Type != options.CompressionNone {
 			opt.Header.Set("Transfer-Encoding", "chunked")
@@ -290,17 +307,6 @@ func prepareRequest(method, url string, source *payloadSource, opt *options.Opti
 				return newBody(source, opt)
 			}
 		}
-	}
-
-	// Set headers and cookies
-	req.Header = opt.Header
-	for _, cookie := range opt.Cookies {
-		req.AddCookie(cookie)
-	}
-
-	// Set Range header for partial content requests
-	if opt.HasRange() {
-		req.Header.Set("Range", opt.Range.RangeHeader())
 	}
 
 	return req, nil

@@ -23,6 +23,7 @@ var (
 	ErrInvalidCompression = errors.New("unsupported compression type")
 	ErrFileNotFound       = errors.New("file does not exist")
 	ErrFileNotPrepared    = errors.New("no file prepared: call PrepareFile first")
+	ErrInvalidRange       = errors.New("invalid byte range")
 )
 
 // Option provides configuration for HTTP requests. It allows customization of various aspects
