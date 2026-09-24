@@ -31,13 +31,17 @@ const (
 )
 
 // doRequest performs the HTTP request to the server/resource.
-// The returned response records the returned error in its Error field.
+// Every outcome, success or failure, records the returned error in the
+// response's Error field and the time the request took.
 func doRequest(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	// Work on a private copy: the request writes headers and state into its
 	// options, and the caller may reuse theirs for later requests.
 	opt := options.New(opts...).Clone()
-	resp, err := send(method, url, payload, opt)
+	start := time.Now()
+	resp, err := send(method, url, payload, opt, start)
 	resp.Error = err
+	resp.AccessTime = time.Since(start)
+	resp.ProcessedTime = time.Now().Unix()
 	return resp, err
 }
 
@@ -45,8 +49,7 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 // This function orchestrates the entire request-response cycle, delegating
 // to helper functions for transport configuration, payload preparation,
 // and response processing. The http.Client follows redirects.
-func send(method string, url string, payload any, opt *options.Option) (response.Response, error) {
-	st := time.Now()
+func send(method string, url string, payload any, opt *options.Option, start time.Time) (response.Response, error) {
 
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
@@ -113,7 +116,7 @@ func send(method string, url string, payload any, opt *options.Option) (response
 		// When a redirect policy rejects a redirect, Do also returns the
 		// redirect response, with its body already closed.
 		if httpResp != nil {
-			resp.PopulateResponse(httpResp, st)
+			resp.PopulateResponse(httpResp, start)
 		}
 		return resp, err
 	}
@@ -131,7 +134,7 @@ func send(method string, url string, payload any, opt *options.Option) (response
 	}
 
 	// Process final response
-	return processResponse(httpResp, resp, opt, st)
+	return processResponse(httpResp, resp, opt, start)
 }
 
 // prepareResume sets up a resumed download when the request starts.
@@ -491,7 +494,6 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	// A response without a body leaves the output alone, so a file destination
 	// keeps its content, and has nothing to decompress.
 	if !hasBody(r) {
-		resp.ProcessedTime = time.Now().Unix()
 		return resp, nil
 	}
 
@@ -611,9 +613,6 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	if buf, ok := writer.(*options.WriteCloserBuffer); ok {
 		resp.Body = *buf
 	}
-
-	resp.ProcessedTime = time.Now().Unix()
-	resp.AccessTime = time.Since(startTime)
 
 	return resp, nil
 }

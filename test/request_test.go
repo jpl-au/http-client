@@ -345,3 +345,24 @@ func TestCustomMethodSendsPayload(t *testing.T) {
 		assert.Equal(t, "payload", body, "the payload of a %s request should be sent", m)
 	}
 }
+
+func TestFailedResponseRecordsTiming(t *testing.T) {
+	const stall = 100 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+		time.Sleep(stall)
+		conn.Close()
+	}))
+	defer server.Close()
+
+	resp, err := client.Get(server.URL)
+	require.Error(t, err)
+
+	assert.GreaterOrEqual(t, resp.AccessTime, stall, "AccessTime should cover the time spent reading the body")
+	assert.NotZero(t, resp.ProcessedTime, "ProcessedTime should be recorded for a failed response")
+}
