@@ -177,3 +177,9 @@ func TestPackageFunctionsUseOptionClient(t *testing.T) {
 
 	assert.Equal(t, int32(1), dials.Load())
 }
+
+// TestRedirectsZeroUsesDefaultMax checks that Redirects with a zero maximum
+// falls back to the same limit as a new Option.
+func TestRedirectsZeroUsesDefaultMax(t *testing.T) {
+	assert.Equal(t, options.New().MaxRedirects(), options.New().Redirects(true, 0).MaxRedirects())
+}

@@ -58,19 +58,19 @@
 //
 // Monitor upload and download progress:
 //
-//	opt := options.New()
-//	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-//	    fmt.Printf("Upload: %.1f%%\n", float64(bytesRead)/float64(totalBytes)*100)
-//	}
-//	opt.Progress.OnDownload = func(bytesRead, totalBytes int64) {
-//	    fmt.Printf("Download: %.1f%%\n", float64(bytesRead)/float64(totalBytes)*100)
-//	}
+//	opt := options.New().
+//	    OnUploadProgress(func(bytesRead, totalBytes int64) {
+//	        fmt.Printf("Upload: %.1f%%\n", float64(bytesRead)/float64(totalBytes)*100)
+//	    }).
+//	    OnDownloadProgress(func(bytesRead, totalBytes int64) {
+//	        fmt.Printf("Download: %.1f%%\n", float64(bytesRead)/float64(totalBytes)*100)
+//	    })
 //
 // # Redirects
 //
-// Configure redirect behavior:
+// Redirects are not followed by default. To follow them:
 //
-//	opt := options.New()
-//	opt.Redirect.Follow = true           // follow redirects (default)
-//	opt.Redirect.Max = 10                // maximum redirects
+//	opt := options.New().
+//	    EnableRedirects().   // follow redirects (off by default)
+//	    SetMaxRedirects(5)   // maximum redirects (10 by default)
 package client

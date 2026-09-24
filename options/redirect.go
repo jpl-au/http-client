@@ -22,10 +22,10 @@ func defaultRedirectConfig() RedirectConfig {
 
 // Redirects configures HTTP redirect behavior.
 // enabled - whether to follow redirects
-// max - maximum number of redirects to follow (defaults to 5 if 0)
+// max - maximum number of redirects to follow (the default of 10 if 0)
 func (opt *Option) Redirects(enabled bool, max int) *Option {
 	if max == 0 {
-		max = 5
+		max = defaultRedirectConfig().Max
 	}
 	opt.mu.Lock()
 	opt.Redirect.Follow = enabled
