@@ -244,3 +244,46 @@ func TestResponseMetadataMatchesRequest(t *testing.T) {
 	assert.Equal(t, traceID, resp.UniqueIdentifier, "the trace header and the response should share one identifier")
 	assert.Equal(t, int64(3), resp.ContentLength)
 }
+
+func TestFailedResponseKeepsStatusAndError(t *testing.T) {
+	invalidGzip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte("not gzip"))
+	}))
+	defer invalidGzip.Close()
+
+	truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+		conn.Close()
+	}))
+	defer truncated.Close()
+
+	tests := []struct {
+		name string
+		url  string
+		opt  *options.Option
+	}{
+		{"invalid gzip body", invalidGzip.URL, options.New().AddHeader("Accept-Encoding", "gzip")},
+		{"truncated body", truncated.URL, options.New()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := client.Get(tt.url, tt.opt)
+			require.Error(t, err)
+			assert.Equal(t, err, resp.Error, "the response should record the returned error")
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "the response should record the received status")
+		})
+	}
+
+	t.Run("invalid URL", func(t *testing.T) {
+		resp, err := client.Get("http://[::1")
+		require.Error(t, err)
+		assert.Equal(t, err, resp.Error, "the response should record the returned error")
+	})
+}

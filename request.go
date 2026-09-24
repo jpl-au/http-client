@@ -29,13 +29,21 @@ const (
 )
 
 // doRequest performs the HTTP request to the server/resource.
-// This function orchestrates the entire request-response cycle, delegating
-// to helper functions for transport configuration, payload preparation,
-// and response processing. The http.Client follows redirects.
+// The returned response records the returned error in its Error field.
 func doRequest(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	// Work on a private copy: the request writes headers and state into its
 	// options, and the caller may reuse theirs for later requests.
 	opt := options.New(opts...).Clone()
+	resp, err := send(method, url, payload, opt)
+	resp.Error = err
+	return resp, err
+}
+
+// send performs the HTTP request with the given options.
+// This function orchestrates the entire request-response cycle, delegating
+// to helper functions for transport configuration, payload preparation,
+// and response processing. The http.Client follows redirects.
+func send(method string, url string, payload any, opt *options.Option) (response.Response, error) {
 	st := time.Now()
 
 	opt.AddHeader("User-Agent", opt.UserAgent)
@@ -91,7 +99,6 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 
 	httpResp, err := client.Do(req)
 	if err != nil {
-		resp.Error = err
 		return resp, err
 	}
 
@@ -104,7 +111,6 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 		httpResp.Header.Get("Location") != "" &&
 		last.Body != nil && last.Body != http.NoBody && last.GetBody == nil {
 		httpResp.Body.Close()
-		resp.Error = ErrPayloadNotReplayable
 		return resp, ErrPayloadNotReplayable
 	}
 
@@ -455,11 +461,14 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time) (response.Response, error) {
 	defer r.Body.Close()
 
+	// Record what was received before reading the body, so a response that
+	// fails later still has its status and headers.
+	resp.PopulateResponse(r, startTime)
+
 	// A response without a body leaves the output alone, so a file destination
 	// keeps its content, and has nothing to decompress.
 	if !hasBody(r) {
 		resp.ProcessedTime = time.Now().Unix()
-		resp.PopulateResponse(r, startTime)
 		return resp, nil
 	}
 
@@ -474,7 +483,6 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		if r.StatusCode == http.StatusPartialContent {
 			cr, err := resumeRange(r, opt.Range.Start, opt.Range.Validator)
 			if err != nil {
-				resp.Error = err
 				return resp, err
 			}
 			resumed = cr
@@ -552,9 +560,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		closeErr = writer.Close()
 	}
 	if copyErr != nil || closeErr != nil {
-		err = errors.Join(copyErr, closeErr)
-		resp.Error = err
-		return resp, err
+		return resp, errors.Join(copyErr, closeErr)
 	}
 
 	if buf, ok := writer.(*options.WriteCloserBuffer); ok {
@@ -562,7 +568,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	resp.ProcessedTime = time.Now().Unix()
-	resp.PopulateResponse(r, startTime)
+	resp.AccessTime = time.Since(startTime)
 
 	return resp, nil
 }
