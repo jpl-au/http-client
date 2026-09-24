@@ -94,3 +94,23 @@ func TestPerRequestClientHasNoTimeout(t *testing.T) {
 
 	assert.Zero(t, opt.Client().Timeout, "a total timeout would cut off long downloads; use a context deadline instead")
 }
+
+func TestSetProtocolScheme(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"h", "h://"},
+		{"ws", "ws://"},
+		{"http", "http://"},
+		{"https://", "https://"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			opt := options.New().SetProtocolScheme(tt.input)
+			assert.Equal(t, tt.want, opt.Transport.Scheme)
+		})
+	}
+}

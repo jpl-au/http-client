@@ -1,6 +1,9 @@
 package options
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // Protocol defines which HTTP protocol versions to use for requests.
 // This type leverages Go 1.24's Transport.Protocols field to provide explicit
@@ -138,7 +141,7 @@ func (opt *Option) SetProtocol(p Protocol) *Option {
 // SetProtocolScheme sets the protocol scheme (e.g., "http://", "https://") for requests.
 // If the provided scheme doesn't end with "://", it will be automatically appended.
 func (opt *Option) SetProtocolScheme(scheme string) *Option {
-	if len(scheme) > 0 && scheme[len(scheme)-3:] != "://" {
+	if scheme != "" && !strings.HasSuffix(scheme, "://") {
 		scheme += "://"
 	}
 	opt.mu.Lock()
