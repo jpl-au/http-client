@@ -1,7 +1,9 @@
 package client
 
 import (
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -169,33 +171,27 @@ func (c *Client) ResponseCount() int {
 	return len(c.responses)
 }
 
-// cleanupResponses removes expired entries and enforces max limit.
+// cleanupResponses removes expired entries, then the oldest entries until
+// there is room for one more below the limit.
 // Must be called with write lock held.
-//
-// Uses a single-pass algorithm: while iterating for TTL expiry, we also
-// track the oldest non-expired entry. If we're still at capacity after
-// TTL cleanup, we can immediately evict the oldest without a second scan.
 func (c *Client) cleanupResponses() {
 	now := time.Now()
-	var oldestID string
-	var oldestTime time.Time
-
-	// Single pass: remove expired entries AND track oldest non-expired
 	for id, entry := range c.responses {
 		if c.responseTTL > 0 && now.Sub(entry.createdAt) > c.responseTTL {
 			delete(c.responses, id)
-			continue
-		}
-		// Track oldest non-expired entry
-		if oldestID == "" || entry.createdAt.Before(oldestTime) {
-			oldestID = id
-			oldestTime = entry.createdAt
 		}
 	}
 
-	// If still at/over capacity, evict the oldest we already found
-	if len(c.responses) >= c.maxResponses && oldestID != "" {
-		delete(c.responses, oldestID)
+	// The limit can drop by more than one, so evict as many as needed.
+	excess := len(c.responses) - c.maxResponses + 1
+	if excess <= 0 {
+		return
+	}
+	oldest := slices.SortedFunc(maps.Keys(c.responses), func(a, b string) int {
+		return c.responses[a].createdAt.Compare(c.responses[b].createdAt)
+	})
+	for _, id := range oldest[:excess] {
+		delete(c.responses, id)
 	}
 }
 

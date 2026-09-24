@@ -185,3 +185,24 @@ func TestClientHistoryWithoutTracing(t *testing.T) {
 	assert.Equal(t, 3, c.ResponseCount(), "each response should have its own history entry")
 	assert.Equal(t, []string{"", "", ""}, traceHeaders, "no trace header should be sent")
 }
+
+// TestClientSetMaxResponsesEnforcesLimit checks that lowering the limit takes
+// effect on the next request.
+func TestClientSetMaxResponsesEnforcesLimit(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	c := client.New()
+	for range 3 {
+		_, err := c.Get(server.URL + "/echo")
+		require.NoError(t, err)
+	}
+	require.Equal(t, 3, c.ResponseCount())
+
+	c.SetMaxResponses(1)
+	resp, err := c.Get(server.URL + "/echo")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, c.ResponseCount())
+	assert.NotNil(t, c.Response(resp.UniqueIdentifier), "the newest response should be kept")
+}
