@@ -122,9 +122,16 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 	return result, err
 }
 
-// configureClient sets up the HTTP client with appropriate transport settings.
+// configureClient returns an HTTP client for one request.
+// The base client can be shared by concurrent requests, so its settings are
+// copied into a new client and the base client is never written to.
 func configureClient(opt *options.Option, state *requestState) *http.Client {
-	client := opt.Client()
+	base := opt.Client()
+	client := &http.Client{
+		Transport: base.Transport,
+		Jar:       base.Jar,
+		Timeout:   base.Timeout,
+	}
 
 	// Clone transport if we need to modify per-request settings
 	needsClone := opt.Transport.MaxResponseHeaderBytes != 0 || opt.Transport.Protocol != options.Both
