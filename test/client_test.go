@@ -230,3 +230,18 @@ func TestClientFileMethodsRecordPreparationErrors(t *testing.T) {
 
 	assert.Equal(t, 3, c.ResponseCount(), "each failed Client upload should be in the history")
 }
+
+// TestClientHistoryKeepsInvalidURLFailures checks that requests that fail
+// before sending still get their own identifier and history entry.
+func TestClientHistoryKeepsInvalidURLFailures(t *testing.T) {
+	c := client.New()
+
+	first, err := c.Get("http://[::1")
+	require.Error(t, err)
+	second, err := c.Get("http://[::2")
+	require.Error(t, err)
+
+	assert.NotEmpty(t, first.UniqueIdentifier)
+	assert.NotEqual(t, first.UniqueIdentifier, second.UniqueIdentifier)
+	assert.Equal(t, 2, c.ResponseCount())
+}

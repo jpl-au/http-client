@@ -64,14 +64,16 @@ func send(method string, url string, payload any, opt *options.Option) (response
 	client, release := configureClient(opt)
 	defer release()
 
+	// Create the response before anything that can fail, so every failure
+	// is recorded with the request's identifier.
+	resp := response.New(id, url, method, payload, opt)
+
 	// Normalise the URL
 	url, err := normaliseURL(url, opt.Transport.Scheme)
 	if err != nil {
-		return response.Response{}, fmt.Errorf("supplied url did not pass url.Parse(): %w", err)
+		return resp, fmt.Errorf("supplied url did not pass url.Parse(): %w", err)
 	}
-
-	// Set up base response object
-	resp := response.New(id, url, method, payload, opt)
+	resp.URL = url
 
 	if err := prepareResume(opt); err != nil {
 		return resp, err
