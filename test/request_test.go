@@ -1,14 +1,19 @@
 package client_test
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBasicRequests(t *testing.T) {
@@ -165,4 +170,59 @@ func TestCustomHeaders(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "test-value", resp.Header.Get("Echo-X-Custom-Header"))
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// blockingCompressor passes writes to the pipe and reports when the first write starts
+// and when the compressor is closed.
+type blockingCompressor struct {
+	w       io.Writer
+	writing chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingCompressor) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.writing) })
+	return c.w.Write(p)
+}
+
+func (c *blockingCompressor) Close() error {
+	close(c.closed)
+	return nil
+}
+
+// TestFailedUploadReleasesCompressor checks that a failed request closes the
+// compression pipe even when upload progress wraps it.
+func TestFailedUploadReleasesCompressor(t *testing.T) {
+	compressor := &blockingCompressor{writing: make(chan struct{}), closed: make(chan struct{})}
+
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		<-compressor.writing
+		r.Body.Close()
+		return nil, errors.New("synthetic transport failure")
+	})
+
+	opt := options.New().
+		SetClient(&http.Client{Transport: transport}).
+		SetCompression(options.CompressionCustom).
+		TrackAfterCompression().
+		OnUploadProgress(func(int64, int64) {})
+	opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
+		compressor.w = w
+		return compressor, nil
+	}
+
+	_, err := client.Post("http://example.invalid/upload", "payload", opt)
+	require.Error(t, err)
+
+	select {
+	case <-compressor.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the compressor is still blocked on the pipe after the request failed")
+	}
 }

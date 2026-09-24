@@ -384,6 +384,20 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 		reader = options.NewProgressReader(reader, 0, opt.Progress.OnUpload)
 	}
 
+	// Progress wrappers hide Close. Restore it so that closing the request body
+	// unblocks the compression goroutine and closes a caller's closable payload,
+	// as net/http would for an unwrapped body.
+	var closers []io.Closer
+	if c, ok := payloadReader.(io.Closer); ok {
+		closers = append(closers, c)
+	}
+	if pipeReader != nil {
+		closers = append(closers, pipeReader)
+	}
+	if len(closers) > 0 {
+		reader = &requestBody{Reader: reader, closers: closers}
+	}
+
 	// Create the request with context
 	ctx := opt.Context
 	if ctx == nil {
@@ -416,6 +430,22 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 	}
 
 	return req, nil
+}
+
+// requestBody is a request body built from a chain of readers. Close closes
+// every closer at the source of the chain.
+type requestBody struct {
+	io.Reader
+	closers []io.Closer
+}
+
+// Close closes each closer and returns their joined errors.
+func (b *requestBody) Close() error {
+	var errs []error
+	for _, c := range b.closers {
+		errs = append(errs, c.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // compressData handles the compression of request data in a goroutine.
