@@ -519,3 +519,16 @@ func TestRedirectReportsFinalURL(t *testing.T) {
 	assert.True(t, resp.Redirected)
 	assert.Equal(t, server.URL+"/destination", resp.Location)
 }
+
+func TestRejectedRedirectKeepsResponse(t *testing.T) {
+	server, _ := newRedirectServer(t, "")
+	errRejected := errors.New("redirect rejected")
+	reject := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return errRejected }}
+
+	resp, err := client.Get(server.URL+"/redirect/302", options.New().EnableRedirects().SetClient(reject))
+	require.ErrorIs(t, err, errRejected)
+
+	assert.Equal(t, err, resp.Error)
+	assert.Equal(t, http.StatusFound, resp.StatusCode, "the rejected redirect response should be recorded")
+	assert.Equal(t, "/destination", resp.Header.Get("Location"))
+}

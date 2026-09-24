@@ -108,6 +108,11 @@ func send(method string, url string, payload any, opt *options.Option) (response
 
 	httpResp, err := client.Do(req)
 	if err != nil {
+		// When a redirect policy rejects a redirect, Do also returns the
+		// redirect response, with its body already closed.
+		if httpResp != nil {
+			resp.PopulateResponse(httpResp, st)
+		}
 		return resp, err
 	}
 
