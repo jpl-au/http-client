@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -179,7 +180,7 @@ func TestResume(t *testing.T) {
 	}
 
 	// Step 2: Resume download from where we left off
-	opt = options.New().Resume(pf)
+	opt = options.New().Resume(pf, resp.Header.Get("ETag"))
 	resp, err = c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("resume download failed: %v", err)
@@ -224,7 +225,7 @@ func TestResumeFromNonExistentFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "new.bin")
 
 	// Resume with non-existent file should start fresh (no Range header)
-	opt := options.New().Resume(f)
+	opt := options.New().Resume(f, "")
 	resp, err := c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -259,7 +260,7 @@ func TestResumeFromEmptyFile(t *testing.T) {
 	f.Close()
 
 	// Resume with empty file should start fresh
-	opt := options.New().Resume(ef)
+	opt := options.New().Resume(ef, "")
 	resp, err := c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -470,13 +471,13 @@ func (s *resumeServer) received() (ranges, ifRanges []string) {
 }
 
 func TestResumeOptionReuseUsesCurrentFileSize(t *testing.T) {
-	server := newResumeServer(t, "abcdef", "")
+	server := newResumeServer(t, "abcdef", `"v1"`)
 	path := filepath.Join(t.TempDir(), "partial.bin")
 	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	opt := options.New().Resume(path)
+	opt := options.New().Resume(path, `"v1"`)
 	for range 2 {
 		if _, err := client.Get(server.URL, opt); err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -533,7 +534,7 @@ func TestResumeValidatesResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := client.Get(server.URL, options.New().Resume(path))
+			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
 			if tt.wantErr == nil && err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -582,6 +583,97 @@ func TestParseContentRangeValues(t *testing.T) {
 			}
 			if *got != *tt.want {
 				t.Errorf("got %+v, want %+v", *got, *tt.want)
+			}
+		})
+	}
+}
+
+func TestResumeRepresentationIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		local       string
+		content     string
+		etag        string
+		validator   string
+		wantRange   string
+		wantIfRange string
+		wantFile    string
+	}{
+		{"matching validator continues", "abc", "abcdef", `"v1"`, `"v1"`, "bytes=3-", `"v1"`, "abcdef"},
+		{"changed resource replaces the file", "OLD", "abcnew", `"v2"`, `"v1"`, "bytes=3-", `"v1"`, "abcnew"},
+		{"no validator starts again", "OLD", "abcnew", `"v2"`, "", "", "", "abcnew"},
+		{"weak validator starts again", "OLD", "abcnew", `W/"v2"`, `W/"v2"`, "", "", "abcnew"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newResumeServer(t, tt.content, tt.etag)
+			path := filepath.Join(t.TempDir(), "partial.bin")
+			if err := os.WriteFile(path, []byte(tt.local), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := client.Get(server.URL, options.New().Resume(path, tt.validator)); err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+
+			ranges, ifRanges := server.received()
+			if ranges[0] != tt.wantRange {
+				t.Errorf("Range = %q, want %q", ranges[0], tt.wantRange)
+			}
+			if ifRanges[0] != tt.wantIfRange {
+				t.Errorf("If-Range = %q, want %q", ifRanges[0], tt.wantIfRange)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.wantFile {
+				t.Errorf("file = %q, want %q", got, tt.wantFile)
+			}
+		})
+	}
+}
+
+func TestResumeRejectsOtherRepresentation(t *testing.T) {
+	tests := []struct {
+		name   string
+		header http.Header
+	}{
+		{"different ETag", http.Header{"Etag": {`"v2"`}}},
+		{"encoded body", http.Header{"Content-Encoding": {"gzip"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var acceptEncoding string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				acceptEncoding = r.Header.Get("Accept-Encoding")
+				maps.Copy(w.Header(), tt.header)
+				w.Header().Set("Content-Range", "bytes 3-5/6")
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write([]byte("new"))
+			}))
+			defer server.Close()
+
+			path := filepath.Join(t.TempDir(), "partial.bin")
+			if err := os.WriteFile(path, []byte("OLD"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+			if !errors.Is(err, client.ErrRangeMismatch) {
+				t.Errorf("err = %v, want ErrRangeMismatch", err)
+			}
+			if acceptEncoding != "identity" {
+				t.Errorf("Accept-Encoding = %q, want identity", acceptEncoding)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "OLD" {
+				t.Errorf("file = %q, want %q", got, "OLD")
 			}
 		})
 	}

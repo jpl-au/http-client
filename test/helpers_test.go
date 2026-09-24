@@ -262,6 +262,7 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			totalSize := int64(len(data))
 
 			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"large"`)
 
 			rangeHeader := r.Header.Get("Range")
 			if rangeHeader == "" {

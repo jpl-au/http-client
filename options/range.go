@@ -26,6 +26,10 @@ type RangeConfig struct {
 	// When true, the response writer should open in append mode.
 	IsResume bool
 
+	// Validator is the ETag, or the Last-Modified value, of the representation
+	// that the partial file holds. A resumed request sends it as If-Range.
+	Validator string
+
 	// err records an invalid range passed to a setter. The request fails with it.
 	err error
 }
@@ -105,18 +109,25 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // from that offset, so the Option can be reused as the file grows. The response
 // is appended to the file at the same path.
 //
+// validator is the ETag of the response that started the file, or its
+// Last-Modified value when it has no ETag. The request sends it as If-Range, so
+// if the resource has changed, the server sends it whole and the file is
+// replaced. When validator is empty or a weak ETag, nothing proves the file
+// belongs to the current resource, and the download starts from the beginning.
+//
 // If the file doesn't exist or is empty, the download starts from the beginning.
+// Resumed downloads ask for the identity encoding.
 //
 // Example usage:
 //
-//	opt := options.New().Resume("/path/to/partial.bin")
+//	opt := options.New().Resume("/path/to/partial.bin", etag)
 //	resp, err := client.Get("https://example.com/file.bin", opt)
-func (opt *Option) Resume(filepath string) *Option {
+func (opt *Option) Resume(filepath string, validator string) *Option {
 	// Always set file output - either appending or creating fresh
 	opt.SetFileOutput(filepath)
 
 	opt.mu.Lock()
-	opt.Range = RangeConfig{IsResume: true}
+	opt.Range = RangeConfig{IsResume: true, Validator: validator}
 	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt

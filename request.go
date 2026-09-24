@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	// Set up base response object
 	resp := response.New(url, method, payload, opt)
 
-	if err := setResumeRange(opt); err != nil {
+	if err := prepareResume(opt); err != nil {
 		return resp, err
 	}
 
@@ -104,12 +105,23 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	return processResponse(httpResp, resp, opt, st)
 }
 
-// setResumeRange sets the range of a resumed download from the size of the
-// partial file when the request starts. A missing or empty file needs no range.
-func setResumeRange(opt *options.Option) error {
+// prepareResume sets up a resumed download when the request starts.
+//
+// A partial file continues from its size at that moment, and If-Range carries
+// the validator of the representation the file holds: if the resource has
+// changed, the server sends it whole and the file is replaced. Without a strong
+// validator, nothing proves the bytes on disk belong to the current
+// representation, so the download starts again. A missing or empty file needs
+// no range.
+//
+// Resumed downloads ask for the identity encoding, because range offsets count
+// encoded bytes and the file holds decoded ones.
+func prepareResume(opt *options.Option) error {
 	if !opt.Range.IsResume {
 		return nil
 	}
+	opt.Header.Set("Accept-Encoding", "identity")
+
 	info, err := os.Stat(opt.ResponseWriter.FilePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -117,11 +129,21 @@ func setResumeRange(opt *options.Option) error {
 	if err != nil {
 		return fmt.Errorf("failed to stat file for resume: %w", err)
 	}
-	if info.Size() > 0 {
-		opt.Range.Start = info.Size()
-		opt.Range.End = -1
-		opt.Range.IsSet = true
+	if info.Size() == 0 {
+		return nil
 	}
+
+	// If-Range needs a strong validator (RFC 9110, section 13.1.5).
+	validator := opt.Range.Validator
+	if validator == "" || strings.HasPrefix(validator, "W/") {
+		opt.Range.IsResume = false
+		return nil
+	}
+
+	opt.Range.Start = info.Size()
+	opt.Range.End = -1
+	opt.Range.IsSet = true
+	opt.Header.Set("If-Range", validator)
 	return nil
 }
 
@@ -442,7 +464,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	expected := int64(-1)
 	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode < http.StatusMultipleChoices {
 		if r.StatusCode == http.StatusPartialContent {
-			length, err := resumeLength(r, opt.Range.Start)
+			length, err := resumeLength(r, opt.Range.Start, opt.Range.Validator)
 			if err != nil {
 				resp.Error = err
 				return resp, err
@@ -543,8 +565,17 @@ func hasBody(r *http.Response) bool {
 
 // resumeLength returns the length of a partial response to a resumed download.
 // It returns an error wrapping ErrRangeMismatch unless the response has a valid
-// bytes Content-Range that starts at offset, the end of the partial file.
-func resumeLength(r *http.Response, offset int64) (int64, error) {
+// bytes Content-Range that starts at offset, the end of the partial file, and
+// belongs to the representation the file holds: no content encoding, and the
+// same ETag as validator when both are ETags.
+func resumeLength(r *http.Response, offset int64, validator string) (int64, error) {
+	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
+		return 0, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
+	}
+	if etag := r.Header.Get("ETag"); etag != "" && strings.HasPrefix(validator, `"`) && etag != validator {
+		return 0, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, validator)
+	}
+
 	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
 	if err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrRangeMismatch, err)
