@@ -152,7 +152,9 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 			if isContinuation {
 				file, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0)
 				if err == nil {
-					offset, err = file.Seek(0, io.SeekEnd)
+					if offset, err = file.Seek(0, io.SeekEnd); err != nil {
+						err = errors.Join(err, file.Close())
+					}
 				}
 			} else {
 				if err := os.Remove(partial); err != nil && !errors.Is(err, fs.ErrNotExist) {
