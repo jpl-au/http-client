@@ -183,3 +183,43 @@ func TestPackageFunctionsUseOptionClient(t *testing.T) {
 func TestRedirectsZeroUsesDefaultMax(t *testing.T) {
 	assert.Equal(t, options.New().MaxRedirects(), options.New().Redirects(true, 0).MaxRedirects())
 }
+
+// TestMergeResetSetters checks that setters that clear a setting override the
+// destination through Merge, and that a default source leaves those settings.
+func TestMergeResetSetters(t *testing.T) {
+	base := func() *options.Option {
+		return options.New().
+			SetContext(context.Background()).
+			OnUploadProgress(func(int64, int64) {}).
+			OnDownloadProgress(func(int64, int64) {}).
+			SetTransport(&http.Transport{}).
+			SetProtocolScheme("https")
+	}
+
+	t.Run("default source keeps the settings", func(t *testing.T) {
+		dest := base()
+		dest.Merge(options.New())
+
+		assert.NotNil(t, dest.Context)
+		assert.NotNil(t, dest.Progress.OnUpload)
+		assert.NotNil(t, dest.Progress.OnDownload)
+		assert.NotNil(t, dest.Transport.HTTP)
+		assert.Equal(t, "https://", dest.Transport.Scheme)
+	})
+
+	t.Run("reset setters clear the settings", func(t *testing.T) {
+		dest := base()
+		dest.Merge(options.New().
+			SetContext(nil).
+			OnUploadProgress(nil).
+			OnDownloadProgress(nil).
+			SetTransport(nil).
+			SetProtocolScheme(""))
+
+		assert.Nil(t, dest.Context)
+		assert.Nil(t, dest.Progress.OnUpload)
+		assert.Nil(t, dest.Progress.OnDownload)
+		assert.Nil(t, dest.Transport.HTTP)
+		assert.Empty(t, dest.Transport.Scheme)
+	})
+}

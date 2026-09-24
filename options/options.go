@@ -56,7 +56,7 @@ type Option struct {
 // settings identifies Option settings whose zero value is a real choice,
 // such as DisableRedirects. Setters record the settings they choose, so that
 // Merge can tell a chosen zero value from a value that was never set.
-type settings uint16
+type settings uint32
 
 const (
 	settingFollow settings = 1 << iota
@@ -70,6 +70,11 @@ const (
 	settingMaxHeaderBytes
 	settingRange
 	settingOutput
+	settingContext
+	settingUploadProgress
+	settingDownloadProgress
+	settingTransport
+	settingScheme
 )
 
 // has reports whether s includes setting.
@@ -325,6 +330,7 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 func (opt *Option) SetContext(ctx context.Context) *Option {
 	opt.mu.Lock()
 	opt.Context = ctx
+	opt.explicit |= settingContext
 	opt.mu.Unlock()
 	return opt
 }
@@ -332,9 +338,15 @@ func (opt *Option) SetContext(ctx context.Context) *Option {
 // Merge combines the settings from another Option instance into this one.
 // Merge copies each setting that the source holds with a value other than its
 // default, and each setting that a setter chose on the source, even when the
-// chosen value is the default. Settings the source left at their defaults do not
-// change this Option. To turn a setting off through Merge, use its setter, such
-// as DisableRedirects.
+// chosen value is the default or nil. Settings the source left at their defaults
+// do not change this Option. To turn a setting off through Merge, use its setter,
+// such as DisableRedirects or OnDownloadProgress(nil).
+//
+// Three kinds of setting are exceptions. Headers and cookies from the source are
+// added, so ClearHeaders and ClearCookies on the source do not remove this
+// Option's. Buffer sizes are copied only when set, because their setters ignore
+// sizes that are not positive. The client selection (SetClient, UseSharedClient,
+// UsePerRequestClient) is not merged.
 func (opt *Option) Merge(src *Option) *Option {
 	if src == nil || src == opt {
 		return opt
@@ -380,7 +392,7 @@ func (opt *Option) Merge(src *Option) *Option {
 	}
 
 	// Merge transport config
-	if src.Transport.HTTP != nil {
+	if src.Transport.HTTP != nil || src.explicit.has(settingTransport) {
 		opt.Transport.HTTP = src.Transport.HTTP
 	}
 	if src.Transport.MaxResponseHeaderBytes != 0 || src.explicit.has(settingMaxHeaderBytes) {
@@ -389,11 +401,11 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Transport.Protocol != Both || src.explicit.has(settingProtocol) {
 		opt.Transport.Protocol = src.Transport.Protocol
 	}
-	if src.Transport.Scheme != "" {
+	if src.Transport.Scheme != "" || src.explicit.has(settingScheme) {
 		opt.Transport.Scheme = src.Transport.Scheme
 	}
 
-	if src.Context != nil {
+	if src.Context != nil || src.explicit.has(settingContext) {
 		opt.Context = src.Context
 	}
 
@@ -437,10 +449,10 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Progress.UploadBufferSize != nil {
 		opt.Progress.UploadBufferSize = src.Progress.UploadBufferSize
 	}
-	if src.Progress.OnUpload != nil {
+	if src.Progress.OnUpload != nil || src.explicit.has(settingUploadProgress) {
 		opt.Progress.OnUpload = src.Progress.OnUpload
 	}
-	if src.Progress.OnDownload != nil {
+	if src.Progress.OnDownload != nil || src.explicit.has(settingDownloadProgress) {
 		opt.Progress.OnDownload = src.Progress.OnDownload
 	}
 	if src.Progress.Tracking != TrackBeforeCompression || src.explicit.has(settingTracking) {

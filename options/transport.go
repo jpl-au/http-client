@@ -90,6 +90,7 @@ func cloneTransport() *http.Transport {
 func (opt *Option) SetTransport(transport *http.Transport) *Option {
 	opt.mu.Lock()
 	opt.Transport.HTTP = transport
+	opt.explicit |= settingTransport
 	opt.mu.Unlock()
 	return opt
 }
@@ -146,6 +147,7 @@ func (opt *Option) SetProtocolScheme(scheme string) *Option {
 	}
 	opt.mu.Lock()
 	opt.Transport.Scheme = scheme
+	opt.explicit |= settingScheme
 	opt.mu.Unlock()
 	return opt
 }

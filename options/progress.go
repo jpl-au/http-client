@@ -96,6 +96,7 @@ func (opt *Option) SetUploadBufferSize(size int) *Option {
 func (opt *Option) OnUploadProgress(fn func(bytesRead, totalBytes int64)) *Option {
 	opt.mu.Lock()
 	opt.Progress.OnUpload = fn
+	opt.explicit |= settingUploadProgress
 	opt.mu.Unlock()
 	return opt
 }
@@ -104,6 +105,7 @@ func (opt *Option) OnUploadProgress(fn func(bytesRead, totalBytes int64)) *Optio
 func (opt *Option) OnDownloadProgress(fn func(bytesRead, totalBytes int64)) *Option {
 	opt.mu.Lock()
 	opt.Progress.OnDownload = fn
+	opt.explicit |= settingDownloadProgress
 	opt.mu.Unlock()
 	return opt
 }
