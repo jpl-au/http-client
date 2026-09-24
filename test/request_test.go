@@ -1,11 +1,14 @@
 package client_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -286,4 +289,26 @@ func TestFailedResponseKeepsStatusAndError(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, err, resp.Error, "the response should record the returned error")
 	})
+}
+
+func TestLoggingRedactsCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	opt := options.New().
+		SetLogger(slog.New(slog.NewTextHandler(&logs, nil))).
+		AddHeader("Authorization", "Bearer secret-token").
+		AddCookie(&http.Cookie{Name: "session", Value: "secret-cookie"})
+
+	url := strings.Replace(server.URL, "http://", "http://user:secret-password@", 1) + "/path?token=secret-query"
+	_, err := client.Get(url, opt)
+	require.NoError(t, err)
+
+	out := logs.String()
+	assert.Contains(t, out, "/path", "the log should still name the request")
+	assert.Contains(t, out, "Authorization", "the log should still list header names")
+	for _, secret := range []string{"secret-token", "secret-cookie", "secret-password", "secret-query"} {
+		assert.NotContains(t, out, secret)
+	}
 }

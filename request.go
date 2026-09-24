@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +96,14 @@ func send(method string, url string, payload any, opt *options.Option) (response
 		}()
 	}
 
-	opt.Log("sending request", "url", req.URL, "method", method, "headers", req.Header)
+	// Log only parts that cannot carry credentials: the URL without user
+	// information, query or fragment, and header names without values.
+	logURL := *req.URL
+	logURL.User = nil
+	logURL.RawQuery = ""
+	logURL.Fragment = ""
+	logURL.RawFragment = ""
+	opt.Log("sending request", "url", logURL.String(), "method", method, "headers", slices.Sorted(maps.Keys(req.Header)))
 	resp.RequestTime = time.Now().Unix()
 
 	httpResp, err := client.Do(req)
