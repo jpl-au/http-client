@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	netURL "net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jpl-au/http-client/options"
@@ -25,36 +25,14 @@ const (
 	URLencoded      string = "application/x-www-form-urlencoded"
 )
 
-// requestState holds mutable state for a single request chain.
-// Created fresh for each top-level request, passed through redirects.
-type requestState struct {
-	redirectCount int
-}
-
-// redirectLimitReached increments and checks if redirect limit is reached.
-func (s *requestState) redirectLimitReached(max int) bool {
-	s.redirectCount++
-	return s.redirectCount > max
-}
-
 // doRequest performs the HTTP request to the server/resource.
 // This function orchestrates the entire request-response cycle, delegating
 // to helper functions for transport configuration, payload preparation,
-// redirect handling, and response processing.
+// and response processing. The http.Client follows redirects.
 func doRequest(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	// Work on a private copy: the request writes headers and state into its
 	// options, and the caller may reuse theirs for later requests.
 	opt := options.New(opts...).Clone()
-
-	// Create fresh request state for this request chain
-	state := &requestState{}
-
-	return doRequestWithState(method, url, payload, opt, state)
-}
-
-// doRequestWithState performs the HTTP request with the given state.
-// This is the internal worker function that handles the actual request execution.
-func doRequestWithState(method string, url string, payload any, opt *options.Option, state *requestState) (response.Response, error) {
 	st := time.Now()
 
 	opt.AddHeader("User-Agent", opt.UserAgent)
@@ -64,7 +42,7 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 	}
 
 	// Configure the HTTP client and transport
-	client, release := configureClient(opt, state)
+	client, release := configureClient(opt)
 	defer release()
 
 	// Normalise the URL
@@ -76,19 +54,23 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 	// Set up base response object
 	resp := response.New(url, method, payload, opt)
 
-	// Prepare the payload (handles file opening and reader creation)
-	payloadReader, contentLength, cleanupFn, err := preparePayload(method, payload, opt)
+	source, err := preparePayload(method, payload, opt)
 	if err != nil {
 		return resp, err
 	}
 
-	// Prepare and execute the request
-	req, err := prepareRequest(method, url, payloadReader, contentLength, opt)
+	req, err := prepareRequest(method, url, source, opt)
 	if err != nil {
-		if cleanupFn != nil {
-			cleanupFn()
-		}
 		return resp, err
+	}
+	if req.Body != nil {
+		// The transport closes the body, but may do so after Do returns.
+		// Closing it here as well ensures an upload file is closed on return.
+		defer func() {
+			if err := req.Body.Close(); err != nil {
+				opt.Log("failed to close request body", "error", err)
+			}
+		}()
 	}
 
 	opt.Log("sending request", "url", req.URL, "method", method, "headers", req.Header)
@@ -96,32 +78,25 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 
 	httpResp, err := client.Do(req)
 	if err != nil {
-		if cleanupFn != nil {
-			cleanupFn()
-		}
-		// If the request fails (e.g., DNS error, connection refused), we must close the request body
-		// if it's a pipe to unblock the writer goroutine (see compressData).
-		if req.Body != nil {
-			req.Body.Close()
-		}
 		resp.Error = err
 		return resp, err
 	}
 
 	resp.ResponseTime = time.Now().Unix()
 
-	// Handle redirects - pass cleanup function to handleRedirect so it can
-	// close the file after properly draining the response
-	if isRedirect(httpResp.StatusCode) {
-		return handleRedirect(httpResp, resp, method, payload, opt, state, cleanupFn)
+	// net/http returns a 307 or 308 unfollowed when it cannot send the body again.
+	last := httpResp.Request
+	if opt.Redirect.Follow &&
+		(httpResp.StatusCode == http.StatusTemporaryRedirect || httpResp.StatusCode == http.StatusPermanentRedirect) &&
+		httpResp.Header.Get("Location") != "" &&
+		last.Body != nil && last.Body != http.NoBody && last.GetBody == nil {
+		httpResp.Body.Close()
+		resp.Error = ErrPayloadNotReplayable
+		return resp, ErrPayloadNotReplayable
 	}
 
 	// Process final response
-	result, err := processResponse(httpResp, resp, opt, st)
-	if cleanupFn != nil {
-		cleanupFn()
-	}
-	return result, err
+	return processResponse(httpResp, resp, opt, st)
 }
 
 // configureClient returns an HTTP client for one request and a release function
@@ -131,7 +106,7 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 // A transport set on the Option takes precedence over the base client's transport.
 // Header-limit and protocol settings need a cloned transport; the clone serves
 // only this request, and release closes its idle connections.
-func configureClient(opt *options.Option, state *requestState) (*http.Client, func()) {
+func configureClient(opt *options.Option) (*http.Client, func()) {
 	base := opt.Client()
 	client := &http.Client{
 		Transport: base.Transport,
@@ -156,12 +131,28 @@ func configureClient(opt *options.Option, state *requestState) (*http.Client, fu
 		}
 	}
 
-	// Disable automatic redirects - we handle them manually
+	// Redirects follow net/http rules: sensitive headers are dropped for another
+	// host, 307 and 308 repeat the method and body, and 301, 302 and 303 change
+	// a POST to a GET without a body.
+	check := base.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if state.redirectLimitReached(opt.Redirect.Max) {
+		if !opt.Redirect.Follow {
+			return http.ErrUseLastResponse
+		}
+		if len(via) > opt.Redirect.Max {
 			return fmt.Errorf("%w: %d", ErrMaxRedirectsExceeded, opt.Redirect.Max)
 		}
-		return http.ErrUseLastResponse
+		// net/http copies every header to the next request. When the body is
+		// dropped, the headers that describe it no longer apply.
+		if req.Body == nil {
+			req.Header.Del(ContentType)
+			req.Header.Del(ContentEncoding)
+			req.Header.Del("Content-Disposition")
+		}
+		if check != nil {
+			return check(req, via)
+		}
+		return nil
 	}
 
 	return client, release
@@ -186,12 +177,19 @@ func applyTransportConfig(t *http.Transport, cfg options.TransportConfig) {
 	}
 }
 
-// preparePayload creates the payload reader for the request.
-// Returns a cleanup function that should be deferred if non-nil.
-func preparePayload(method string, payload any, opt *options.Option) (io.Reader, int64, func(), error) {
+// payloadSource opens the request payload for one attempt.
+type payloadSource struct {
+	open       func() (io.Reader, error) // Returns the payload from its start.
+	length     int64                     // Payload length in bytes, or -1 if unknown.
+	replayable bool                      // open can be called again to send the payload on a redirect.
+}
+
+// preparePayload returns the source of the request payload, or nil when the
+// request has no payload.
+func preparePayload(method string, payload any, opt *options.Option) (*payloadSource, error) {
 	// Only POST, PUT, PATCH can have payloads
 	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
-		return nil, 0, nil, nil
+		return nil, nil
 	}
 
 	// If payload is an *os.File and no file path is configured, extract the path
@@ -200,7 +198,7 @@ func preparePayload(method string, payload any, opt *options.Option) (io.Reader,
 	if f, ok := payload.(*os.File); ok && !opt.HasFile() {
 		info, err := f.Stat()
 		if err != nil {
-			return nil, 0, nil, fmt.Errorf("failed to stat file: %w", err)
+			return nil, fmt.Errorf("failed to stat file: %w", err)
 		}
 		opt.File.SetPath(f.Name())
 		opt.File.SetSize(info.Size())
@@ -208,214 +206,90 @@ func preparePayload(method string, payload any, opt *options.Option) (io.Reader,
 
 	// Handle file uploads - open fresh each time
 	if opt.HasFile() {
-		file, err := opt.OpenFile()
-		if err != nil {
-			return nil, 0, nil, fmt.Errorf("failed to open file: %w", err)
-		}
-		reader, length, err := opt.CreatePayloadReader(file)
-		if err != nil {
-			file.Close()
-			return nil, 0, nil, fmt.Errorf("unable to create payload reader: %w", err)
-		}
-		return reader, length, func() { file.Close() }, nil
-	}
-
-	// Handle other payloads
-	if payload != nil {
-		reader, length, err := opt.CreatePayloadReader(payload)
-		if err != nil {
-			return nil, 0, nil, fmt.Errorf("unable to create payload reader: %w", err)
-		}
-		return reader, length, nil, nil
-	}
-
-	return nil, 0, nil, nil
-}
-
-// handleRedirect processes a redirect response and follows it if configured.
-// cleanupFn closes any resources (e.g., file handles) from the original request.
-func handleRedirect(httpResp *http.Response, resp response.Response, method string, payload any, opt *options.Option, state *requestState, cleanupFn func()) (response.Response, error) {
-	st := time.Now()
-
-	// Helper to drain and close response, then cleanup file handle
-	closeAll := func() {
-		// Drain response body to ensure transport is done with the request.
-		// Error intentionally ignored - we're just draining before close.
-		_, _ = io.Copy(io.Discard, httpResp.Body)
-		httpResp.Body.Close()
-		// Now safe to close the file handle
-		if cleanupFn != nil {
-			cleanupFn()
-		}
-	}
-
-	// If redirects are not allowed, return the redirect response immediately
-	if !opt.Redirect.Follow {
-		resp.PopulateResponse(httpResp, st)
-		httpResp.Body.Close()
-		if cleanupFn != nil {
-			cleanupFn()
-		}
-		return resp, nil
-	}
-
-	redirectURL := httpResp.Header.Get("Location")
-	if redirectURL == "" {
-		closeAll()
-		return resp, ErrRedirectMissingLocation
-	}
-
-	// Parse and resolve the redirect URL
-	parsedRedirect, err := netURL.Parse(redirectURL)
-	if err != nil {
-		closeAll()
-		return resp, fmt.Errorf("invalid redirect URL: %w", err)
-	}
-
-	nextURL := httpResp.Request.URL.ResolveReference(parsedRedirect).String()
-	closeAll()
-
-	// Handle the redirect
-	if opt.Redirect.PreserveMethod {
-		var newPayload any
-
-		// For file uploads, OpenFile will be called again in the recursive doRequestWithState
-		// For non-file payloads, recreate them
-		if !opt.HasFile() && payload != nil {
-			switch v := payload.(type) {
-			case []byte:
-				newPayload = v
-			case *bytes.Buffer:
-				newPayload = bytes.NewBuffer(v.Bytes())
-			case string:
-				newPayload = v
-			case io.Seeker:
-				// For seekable readers (including *os.File), seek back to start
-				if _, err := v.Seek(0, io.SeekStart); err != nil {
-					return resp, fmt.Errorf("failed to seek payload for redirect: %w", err)
-				}
-				newPayload = payload
-			case io.Reader:
-				// Non-seekable io.Reader - attempt to buffer for replay
-				buffered, err := bufferReaderForReplay(v, options.MaxReplayableBodySize)
+		return &payloadSource{
+			open: func() (io.Reader, error) {
+				file, err := opt.OpenFile()
 				if err != nil {
-					return resp, err
+					return nil, fmt.Errorf("failed to open file: %w", err)
 				}
-				newPayload = buffered
-			}
-		}
-
-		return doRequestWithState(method, nextURL, newPayload, opt, state)
+				return file, nil
+			},
+			length:     opt.Size(),
+			replayable: true,
+		}, nil
 	}
 
-	// Switch to GET method as per HTTP spec for other redirects
-	return doRequestWithState(http.MethodGet, nextURL, nil, opt, state)
-}
+	if payload == nil {
+		return nil, nil
+	}
 
-// isRedirect checks if the status code indicates a redirect.
-func isRedirect(statusCode int) bool {
-	return statusCode == http.StatusMovedPermanently ||
-		statusCode == http.StatusFound ||
-		statusCode == http.StatusSeeOther ||
-		statusCode == http.StatusTemporaryRedirect ||
-		statusCode == http.StatusPermanentRedirect
-}
-
-// bufferReaderForReplay reads a non-seekable io.Reader into a byte slice for replay.
-// Returns ErrPayloadNotReplayable if the reader exceeds the max buffer size.
-func bufferReaderForReplay(r io.Reader, maxSize int64) ([]byte, error) {
-	// Use LimitReader to cap memory usage, read one extra byte to detect overflow
-	limited := io.LimitReader(r, maxSize+1)
-	buf, err := io.ReadAll(limited)
+	_, length, err := opt.CreatePayloadReader(payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to buffer payload for replay: %w", err)
+		return nil, fmt.Errorf("unable to create payload reader: %w", err)
 	}
-	if int64(len(buf)) > maxSize {
-		return nil, fmt.Errorf("%w: size exceeds %d bytes (use []byte or a seekable reader for large payloads)", ErrPayloadNotReplayable, maxSize)
+
+	// CreatePayloadReader returns a new reader for byte payloads, and seeks a
+	// seekable reader back to its start, so each call gives the whole payload.
+	// net/http closes the body after sending it, so a closable reader cannot
+	// be sent twice.
+	var replayable bool
+	switch payload.(type) {
+	case []byte, string, *bytes.Buffer:
+		replayable = true
+	case io.Closer:
+		replayable = false
+	case io.Seeker:
+		replayable = true
 	}
-	return buf, nil
+
+	return &payloadSource{
+		open: func() (io.Reader, error) {
+			reader, _, err := opt.CreatePayloadReader(payload)
+			return reader, err
+		},
+		length:     length,
+		replayable: replayable,
+	}, nil
 }
 
-// prepareRequest creates and configures the HTTP request with compression
-// and progress tracking.
-func prepareRequest(method, url string, payloadReader io.Reader, contentLength int64, opt *options.Option) (*http.Request, error) {
-	var reader io.Reader = payloadReader
-
-	// Add progress tracking before compression if specified
-	if reader != nil && opt.Progress.OnUpload != nil &&
-		(method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) {
-
-		if opt.ProgressTracking() == options.TrackBeforeCompression {
-			var totalSize int64 = contentLength
-			if sizer, ok := payloadReader.(io.Seeker); ok {
-				if size, err := sizer.Seek(0, io.SeekEnd); err == nil {
-					if _, err := sizer.Seek(0, io.SeekStart); err == nil {
-						totalSize = size
-					}
-					// If seek back fails, use contentLength as fallback
-				}
-			}
-			reader = options.NewProgressReader(payloadReader, totalSize, opt.Progress.OnUpload)
-		}
-	}
-
-	// Handle compression via pipe
-	var pipeReader *io.PipeReader
-	if reader != nil && opt.Compression.Type != options.CompressionNone {
-		pr, pw := io.Pipe()
-		pipeReader = pr
-		go compressData(pw, reader, opt)
-		reader = pr
-		opt.Header.Set("Transfer-Encoding", "chunked")
-		opt.Header.Del("Content-Length")
-		if opt.Compression.Type != options.CompressionCustom {
-			opt.Header.Set(ContentEncoding, string(opt.Compression.Type))
-		} else if opt.Compression.CustomType != "" {
-			opt.Header.Set(ContentEncoding, string(opt.Compression.CustomType))
-		} else {
-			opt.Header.Set(ContentEncoding, "application/octet-stream")
-		}
-	}
-
-	// Add progress tracking after compression if specified
-	if reader != nil && opt.Progress.OnUpload != nil &&
-		(method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) &&
-		opt.ProgressTracking() == options.TrackAfterCompression {
-		reader = options.NewProgressReader(reader, 0, opt.Progress.OnUpload)
-	}
-
-	// Progress wrappers hide Close. Restore it so that closing the request body
-	// unblocks the compression goroutine and closes a caller's closable payload,
-	// as net/http would for an unwrapped body.
-	var closers []io.Closer
-	if c, ok := payloadReader.(io.Closer); ok {
-		closers = append(closers, c)
-	}
-	if pipeReader != nil {
-		closers = append(closers, pipeReader)
-	}
-	if len(closers) > 0 {
-		reader = &requestBody{Reader: reader, closers: closers}
-	}
-
-	// Create the request with context
+// prepareRequest creates the HTTP request with its headers, cookies, range and body.
+func prepareRequest(method, url string, source *payloadSource, opt *options.Option) (*http.Request, error) {
 	ctx := opt.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		if pipeReader != nil {
-			pipeReader.Close()
-		}
 		return nil, err
 	}
 
-	// Set content length
-	if reader == nil {
-		req.ContentLength = 0
-	} else if opt.Compression.Type == options.CompressionNone {
-		req.ContentLength = contentLength
+	if source != nil {
+		if opt.Compression.Type != options.CompressionNone {
+			opt.Header.Set("Transfer-Encoding", "chunked")
+			opt.Header.Del("Content-Length")
+			if opt.Compression.Type != options.CompressionCustom {
+				opt.Header.Set(ContentEncoding, string(opt.Compression.Type))
+			} else if opt.Compression.CustomType != "" {
+				opt.Header.Set(ContentEncoding, string(opt.Compression.CustomType))
+			} else {
+				opt.Header.Set(ContentEncoding, "application/octet-stream")
+			}
+		}
+
+		body, err := newBody(source, opt)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = body
+		req.ContentLength = -1
+		if opt.Compression.Type == options.CompressionNone {
+			req.ContentLength = source.length
+		}
+		if source.replayable {
+			req.GetBody = func() (io.ReadCloser, error) {
+				return newBody(source, opt)
+			}
+		}
 	}
 
 	// Set headers and cookies
@@ -432,20 +306,63 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 	return req, nil
 }
 
+// newBody opens the payload and builds the request body for one attempt:
+// upload progress, then compression through a pipe.
+func newBody(source *payloadSource, opt *options.Option) (io.ReadCloser, error) {
+	payload, err := source.open()
+	if err != nil {
+		return nil, err
+	}
+
+	// Progress wrappers hide Close. The body keeps the closers so that closing
+	// it closes a payload file or a caller's closable reader, as net/http would
+	// for an unwrapped body, and unblocks the compression goroutine.
+	body := &requestBody{}
+	if c, ok := payload.(io.Closer); ok {
+		body.closers = append(body.closers, c)
+	}
+
+	reader := payload
+	if opt.Progress.OnUpload != nil && opt.ProgressTracking() == options.TrackBeforeCompression {
+		reader = options.NewProgressReader(reader, source.length, opt.Progress.OnUpload)
+	}
+
+	if opt.Compression.Type != options.CompressionNone {
+		pr, pw := io.Pipe()
+		go compressData(pw, reader, opt)
+		reader = pr
+		body.closers = append(body.closers, pr)
+	}
+
+	if opt.Progress.OnUpload != nil && opt.ProgressTracking() == options.TrackAfterCompression {
+		reader = options.NewProgressReader(reader, 0, opt.Progress.OnUpload)
+	}
+
+	body.Reader = reader
+	return body, nil
+}
+
 // requestBody is a request body built from a chain of readers. Close closes
-// every closer at the source of the chain.
+// every closer at the source of the chain, once.
 type requestBody struct {
 	io.Reader
 	closers []io.Closer
+	once    sync.Once
+	err     error
 }
 
 // Close closes each closer and returns their joined errors.
+// The transport and doRequest both close the body, so later calls return
+// the result of the first.
 func (b *requestBody) Close() error {
-	var errs []error
-	for _, c := range b.closers {
-		errs = append(errs, c.Close())
-	}
-	return errors.Join(errs...)
+	b.once.Do(func() {
+		var errs []error
+		for _, c := range b.closers {
+			errs = append(errs, c.Close())
+		}
+		b.err = errors.Join(errs...)
+	})
+	return b.err
 }
 
 // compressData handles the compression of request data in a goroutine.

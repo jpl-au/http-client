@@ -25,12 +25,6 @@ var (
 	ErrFileNotPrepared    = errors.New("no file prepared: call PrepareFile first")
 )
 
-// MaxReplayableBodySize is the maximum size of a non-seekable request body
-// that will be buffered for redirect/retry replay. Bodies larger than this limit
-// that cannot be seeked (like streaming io.Reader) will fail on redirect/retry
-// with ErrPayloadNotReplayable.
-const MaxReplayableBodySize = 10 * 1024 * 1024 // 10MB
-
 // Option provides configuration for HTTP requests. It allows customization of various aspects
 // of the request including headers, compression, logging, response handling, and progress tracking.
 // If no options are provided when making a request, a default configuration is automatically generated.
@@ -65,7 +59,6 @@ type settings uint16
 
 const (
 	settingFollow settings = 1 << iota
-	settingPreserveMethod
 	settingMaxRedirects
 	settingLogging
 	settingLogger
@@ -376,9 +369,6 @@ func (opt *Option) Merge(src *Option) *Option {
 	}
 	if src.Redirect.Follow || src.explicit.has(settingFollow) {
 		opt.Redirect.Follow = src.Redirect.Follow
-	}
-	if src.Redirect.PreserveMethod || src.explicit.has(settingPreserveMethod) {
-		opt.Redirect.PreserveMethod = src.Redirect.PreserveMethod
 	}
 	if (src.Redirect.Max != 0 && src.Redirect.Max != defaultRedirectConfig().Max) || src.explicit.has(settingMaxRedirects) {
 		opt.Redirect.Max = src.Redirect.Max

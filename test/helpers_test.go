@@ -200,7 +200,7 @@ func setupTestServer(t *testing.T) *httptest.Server {
 
 		case "/upload/redirect":
 			t.Logf("redirecting to /upload")
-			http.Redirect(w, r, "/upload", http.StatusFound)
+			http.Redirect(w, r, "/upload", http.StatusTemporaryRedirect)
 
 		case "/upload/no-preserve":
 			t.Logf("redirecting to /method-check")

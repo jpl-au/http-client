@@ -271,10 +271,8 @@ func TestRedirectMethodsRace(t *testing.T) {
 
 		wg.Go(func() {
 			for range raceIterations {
-				opt.Redirects(true, true, 5)
+				opt.Redirects(true, 5)
 				opt.SetMaxRedirects(10)
-				opt.EnablePreserveMethod()
-				opt.DisablePreserveMethod()
 			}
 		})
 
@@ -512,8 +510,6 @@ func TestAllMethodsConcurrent(t *testing.T) {
 				opt.DisableRedirects()
 				opt.SetMaxRedirects(5)
 				_ = opt.MaxRedirects()
-				opt.EnablePreserveMethod()
-				opt.DisablePreserveMethod()
 			}
 		})
 

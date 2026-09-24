@@ -72,6 +72,5 @@
 //
 //	opt := options.New()
 //	opt.Redirect.Follow = true           // follow redirects (default)
-//	opt.Redirect.PreserveMethod = true   // keep POST on redirect
 //	opt.Redirect.Max = 10                // maximum redirects
 package client

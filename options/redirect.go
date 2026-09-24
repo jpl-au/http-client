@@ -4,11 +4,9 @@ package options
 type RedirectConfig struct {
 	// Follow determines whether HTTP redirects are automatically followed.
 	// When false (default), the redirect response is returned as-is.
+	// Redirects follow net/http rules: 307 and 308 repeat the method and body,
+	// and 301, 302 and 303 change a POST to a GET without a body.
 	Follow bool
-
-	// PreserveMethod maintains the original HTTP method on redirect.
-	// By default (false), redirects switch to GET as per HTTP spec.
-	PreserveMethod bool
 
 	// Max is the maximum number of redirects to follow before giving up.
 	Max int
@@ -17,25 +15,22 @@ type RedirectConfig struct {
 // defaultRedirectConfig returns the default redirect configuration.
 func defaultRedirectConfig() RedirectConfig {
 	return RedirectConfig{
-		Follow:         false,
-		PreserveMethod: false,
-		Max:            10,
+		Follow: false,
+		Max:    10,
 	}
 }
 
 // Redirects configures HTTP redirect behavior.
 // enabled - whether to follow redirects
-// preserve - whether to preserve the original HTTP method on redirect
 // max - maximum number of redirects to follow (defaults to 5 if 0)
-func (opt *Option) Redirects(enabled bool, preserve bool, max int) *Option {
+func (opt *Option) Redirects(enabled bool, max int) *Option {
 	if max == 0 {
 		max = 5
 	}
 	opt.mu.Lock()
 	opt.Redirect.Follow = enabled
-	opt.Redirect.PreserveMethod = preserve
 	opt.Redirect.Max = max
-	opt.explicit |= settingFollow | settingPreserveMethod | settingMaxRedirects
+	opt.explicit |= settingFollow | settingMaxRedirects
 	opt.mu.Unlock()
 	return opt
 }
@@ -54,24 +49,6 @@ func (opt *Option) DisableRedirects() *Option {
 	opt.mu.Lock()
 	opt.Redirect.Follow = false
 	opt.explicit |= settingFollow
-	opt.mu.Unlock()
-	return opt
-}
-
-// EnablePreserveMethod configures redirects to maintain the original HTTP method.
-func (opt *Option) EnablePreserveMethod() *Option {
-	opt.mu.Lock()
-	opt.Redirect.PreserveMethod = true
-	opt.explicit |= settingPreserveMethod
-	opt.mu.Unlock()
-	return opt
-}
-
-// DisablePreserveMethod configures redirects to not maintain the original HTTP method.
-func (opt *Option) DisablePreserveMethod() *Option {
-	opt.mu.Lock()
-	opt.Redirect.PreserveMethod = false
-	opt.explicit |= settingPreserveMethod
 	opt.mu.Unlock()
 	return opt
 }

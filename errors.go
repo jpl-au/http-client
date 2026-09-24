@@ -16,10 +16,8 @@ var (
 	// ErrMissingHost is returned when the URL has no host component.
 	ErrMissingHost = errors.New("missing host")
 
-	// ErrRedirectMissingLocation is returned when a redirect response has no Location header.
-	ErrRedirectMissingLocation = errors.New("redirect location header missing")
-
-	// ErrPayloadNotReplayable is returned when a redirect or retry is needed but the
-	// payload is a non-seekable io.Reader that exceeds the buffer limit and cannot be replayed.
-	ErrPayloadNotReplayable = errors.New("payload cannot be replayed: non-seekable reader exceeds buffer limit")
+	// ErrPayloadNotReplayable is returned when a 307 or 308 redirect needs the request
+	// body again but the payload is a reader that can only be read once. Use []byte,
+	// string, *bytes.Buffer, a file, or a seekable reader to follow such redirects.
+	ErrPayloadNotReplayable = errors.New("payload cannot be replayed for redirect")
 )

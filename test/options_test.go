@@ -22,7 +22,6 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		dest := options.New()
 		dest.Logging.Enabled = true
 		dest.Redirect.Follow = true
-		dest.Redirect.PreserveMethod = true
 
 		// Create an uninitialised option (zero values for booleans)
 		src := &options.Option{}
@@ -32,14 +31,12 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		assert.True(t, dest.Logging.Enabled, "Logging.Enabled should remain true after merge with uninitialised source")
 		assert.True(t, dest.Redirect.Follow, "FollowRedirects should remain true after merge with uninitialised source")
-		assert.True(t, dest.Redirect.PreserveMethod, "PreserveMethodOnRedirect should remain true after merge with uninitialised source")
 	})
 
 	t.Run("Default source should not override booleans", func(t *testing.T) {
 		dest := options.New()
 		dest.Logging.Enabled = true
 		dest.Redirect.Follow = true
-		dest.Redirect.PreserveMethod = true
 		dest.TrackAfterCompression()
 		dest.SetMaxRedirects(3)
 		dest.SetIdentifierType(options.IdentifierUUID)
@@ -52,7 +49,6 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		assert.True(t, dest.Logging.Enabled, "Logging.Enabled should remain true after merge with a default source")
 		assert.True(t, dest.Redirect.Follow, "FollowRedirects should remain true after merge with a default source")
-		assert.True(t, dest.Redirect.PreserveMethod, "PreserveMethodOnRedirect should remain true after merge with a default source")
 		assert.Equal(t, options.TrackAfterCompression, dest.ProgressTracking(), "Tracking should remain after merge with a default source")
 		assert.Equal(t, 3, dest.MaxRedirects(), "MaxRedirects should remain after merge with a default source")
 		assert.Equal(t, options.IdentifierUUID, dest.IdentifierType(), "IdentifierType should remain after merge with a default source")
@@ -65,7 +61,6 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		dest := options.New().
 			EnableLogging().
 			EnableRedirects().
-			EnablePreserveMethod().
 			TrackAfterCompression().
 			SetCompression(options.CompressionGzip).
 			SetIdentifierType(options.IdentifierUUID).
@@ -77,7 +72,6 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		src := options.New().
 			DisableLogging().
 			DisableRedirects().
-			DisablePreserveMethod().
 			TrackBeforeCompression().
 			SetCompression(options.CompressionNone).
 			SetIdentifierType(options.IdentifierNone).
@@ -90,7 +84,6 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		assert.False(t, dest.Logging.Enabled)
 		assert.False(t, dest.Redirect.Follow)
-		assert.False(t, dest.Redirect.PreserveMethod)
 		assert.Equal(t, options.TrackBeforeCompression, dest.ProgressTracking())
 		assert.Equal(t, options.CompressionNone, dest.Compression.Type)
 		assert.Equal(t, options.IdentifierNone, dest.IdentifierType())

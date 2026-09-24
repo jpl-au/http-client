@@ -35,7 +35,7 @@ func TestProgressTracking(t *testing.T) {
 		var lastProgress float64
 		progressCalls := 0
 
-		opt := options.New().Redirects(true, true, 5)
+		opt := options.New().Redirects(true, 5)
 		opt.AddHeader("X-DATA", "upload/redirect")
 
 		opt.Progress.OnUpload = func(current, total int64) {
