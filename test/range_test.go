@@ -2,6 +2,9 @@ package client_test
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -158,10 +161,10 @@ func TestResume(t *testing.T) {
 	total := int64(largefile.Len())
 	half := total / 2
 
-	// Step 1: Download first half
+	// Step 1: Download first half into the partial file that Resume continues
 	opt := options.New().
 		SetRange(0, half-1).
-		SetFileOutput(pf)
+		SetFileOutput(options.PartialPath(pf))
 
 	resp, err := c.Get(server.URL+"/download/range", opt)
 	if err != nil {
@@ -171,7 +174,7 @@ func TestResume(t *testing.T) {
 		t.Fatalf("expected 206, got %d", resp.StatusCode)
 	}
 
-	info, err := os.Stat(pf)
+	info, err := os.Stat(options.PartialPath(pf))
 	if err != nil {
 		t.Fatalf("failed to stat partial file: %v", err)
 	}
@@ -195,6 +198,9 @@ func TestResume(t *testing.T) {
 	}
 	if info.Size() != total {
 		t.Fatalf("completed file size = %d, want %d", info.Size(), total)
+	}
+	if got := contentOrAbsent(t, options.PartialPath(pf)); got != absent {
+		t.Error("the partial file should be renamed to the destination when complete")
 	}
 
 	// Step 3: Download full file in one go for comparison
@@ -471,27 +477,39 @@ func (s *resumeServer) received() (ranges, ifRanges []string) {
 }
 
 func TestResumeOptionReuseUsesCurrentFileSize(t *testing.T) {
-	server := newResumeServer(t, "abcdef", `"v1"`)
-	path := filepath.Join(t.TempDir(), "partial.bin")
-	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// The server sends at most three bytes per request, so each resume
+	// must continue from the size the previous one left.
+	const content = "abcdefghi"
+	var ranges []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ranges = append(ranges, r.Header.Get("Range"))
+		start, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		end := min(start+3, len(content))
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end-1, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(content[start:end]))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "abc")
 
 	opt := options.New().Resume(path, `"v1"`)
-	for range 2 {
-		if _, err := client.Get(server.URL, opt); err != nil {
-			t.Fatalf("request failed: %v", err)
-		}
+	if _, err := client.Get(server.URL, opt); !errors.Is(err, client.ErrDownloadIncomplete) {
+		t.Fatalf("first resume: err = %v, want ErrDownloadIncomplete", err)
+	}
+	if _, err := client.Get(server.URL, opt); err != nil {
+		t.Fatalf("second resume failed: %v", err)
 	}
 
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	if got := contentOrAbsent(t, path); got != content {
+		t.Errorf("file = %q, want %q", got, content)
 	}
-	if string(got) != "abcdef" {
-		t.Errorf("file = %q, want %q", got, "abcdef")
-	}
-	ranges, _ := server.received()
 	if want := []string{"bytes=3-", "bytes=6-"}; !slices.Equal(ranges, want) {
 		t.Errorf("Range headers = %q, want %q", ranges, want)
 	}
@@ -504,17 +522,19 @@ func TestResumeValidatesResponse(t *testing.T) {
 		contentRange string
 		body         string
 		wantFile     string
+		wantPartial  string
 		wantErr      error
 	}{
-		{"valid continuation", http.StatusPartialContent, "bytes 3-5/6", "def", "abcdef", nil},
-		{"full response restarts the file", http.StatusOK, "", "abcdef", "abcdef", nil},
-		{"wrong start", http.StatusPartialContent, "bytes 0-2/6", "abc", "abc", client.ErrRangeMismatch},
-		{"unsatisfiable range", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", "abc", nil},
-		{"server error", http.StatusInternalServerError, "", "server error", "abc", nil},
-		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", "abcd", client.ErrRangeMismatch},
-		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", "abcdef", client.ErrRangeMismatch},
-		{"missing Content-Range", http.StatusPartialContent, "", "def", "abc", client.ErrRangeMismatch},
-		{"other range unit", http.StatusPartialContent, "items 3-5/6", "def", "abc", client.ErrRangeMismatch},
+		{"valid continuation", http.StatusPartialContent, "bytes 3-5/6", "def", "abcdef", absent, nil},
+		{"full response restarts the file", http.StatusOK, "", "abcdef", "abcdef", absent, nil},
+		{"range short of the total", http.StatusPartialContent, "bytes 3-4/6", "de", absent, "abcde", client.ErrDownloadIncomplete},
+		{"wrong start", http.StatusPartialContent, "bytes 0-2/6", "abc", absent, "abc", client.ErrRangeMismatch},
+		{"unsatisfiable range", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", absent, "abc", nil},
+		{"server error", http.StatusInternalServerError, "", "server error", absent, "abc", nil},
+		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", absent, "abcd", client.ErrRangeMismatch},
+		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", absent, "abcdef", client.ErrRangeMismatch},
+		{"missing Content-Range", http.StatusPartialContent, "", "def", absent, "abc", client.ErrRangeMismatch},
+		{"other range unit", http.StatusPartialContent, "items 3-5/6", "def", absent, "abc", client.ErrRangeMismatch},
 	}
 
 	for _, tt := range tests {
@@ -529,10 +549,8 @@ func TestResumeValidatesResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			path := filepath.Join(t.TempDir(), "partial.bin")
-			if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, "abc")
 
 			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
 			if tt.wantErr == nil && err != nil {
@@ -542,12 +560,73 @@ func TestResumeValidatesResponse(t *testing.T) {
 				t.Errorf("err = %v, want %v", err, tt.wantErr)
 			}
 
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
+			if got := contentOrAbsent(t, path); got != tt.wantFile {
+				t.Errorf("destination = %q, want %q", got, tt.wantFile)
 			}
-			if string(got) != tt.wantFile {
-				t.Errorf("file = %q, want %q", got, tt.wantFile)
+			if got := contentOrAbsent(t, options.PartialPath(path)); got != tt.wantPartial {
+				t.Errorf("partial file = %q, want %q", got, tt.wantPartial)
+			}
+		})
+	}
+}
+
+// TestResumeLeavesDestinationUntilComplete checks that an existing destination
+// keeps its content while a resumed download is still incomplete.
+func TestResumeLeavesDestinationUntilComplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 3-4/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("de"))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "download.bin")
+	if err := os.WriteFile(path, []byte("old version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePartial(t, path, "abc")
+
+	_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+	if !errors.Is(err, client.ErrDownloadIncomplete) {
+		t.Errorf("err = %v, want ErrDownloadIncomplete", err)
+	}
+	if got := contentOrAbsent(t, path); got != "old version" {
+		t.Errorf("destination = %q, want %q", got, "old version")
+	}
+}
+
+// TestFreshResumeKeepsDestinationOnTruncatedBody checks that a Resume that
+// starts from nothing stages its data like any other download.
+func TestFreshResumeKeepsDestinationOnTruncatedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+		conn.Close()
+	}))
+	defer server.Close()
+
+	for _, existing := range []string{absent, ""} {
+		t.Run(fmt.Sprintf("destination %q", existing), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "download.bin")
+			if existing != absent {
+				if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, err := client.Get(server.URL, options.New().Resume(path, ""))
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("err = %v, want unexpected EOF", err)
+			}
+			if got := contentOrAbsent(t, path); got != existing {
+				t.Errorf("destination = %q, want %q", got, existing)
+			}
+			if got := contentOrAbsent(t, options.PartialPath(path)); got != "bad" {
+				t.Errorf("partial file = %q, want the received bytes kept for a later resume", got)
 			}
 		})
 	}
@@ -608,10 +687,8 @@ func TestResumeRepresentationIdentity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newResumeServer(t, tt.content, tt.etag)
-			path := filepath.Join(t.TempDir(), "partial.bin")
-			if err := os.WriteFile(path, []byte(tt.local), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, tt.local)
 
 			if _, err := client.Get(server.URL, options.New().Resume(path, tt.validator)); err != nil {
 				t.Fatalf("request failed: %v", err)
@@ -624,11 +701,7 @@ func TestResumeRepresentationIdentity(t *testing.T) {
 			if ifRanges[0] != tt.wantIfRange {
 				t.Errorf("If-Range = %q, want %q", ifRanges[0], tt.wantIfRange)
 			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != tt.wantFile {
+			if got := contentOrAbsent(t, path); got != tt.wantFile {
 				t.Errorf("file = %q, want %q", got, tt.wantFile)
 			}
 		})
@@ -656,10 +729,8 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 			}))
 			defer server.Close()
 
-			path := filepath.Join(t.TempDir(), "partial.bin")
-			if err := os.WriteFile(path, []byte("OLD"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, "OLD")
 
 			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
 			if !errors.Is(err, client.ErrRangeMismatch) {
@@ -668,12 +739,11 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 			if acceptEncoding != "identity" {
 				t.Errorf("Accept-Encoding = %q, want identity", acceptEncoding)
 			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
+			if got := contentOrAbsent(t, options.PartialPath(path)); got != "OLD" {
+				t.Errorf("partial file = %q, want %q", got, "OLD")
 			}
-			if string(got) != "OLD" {
-				t.Errorf("file = %q, want %q", got, "OLD")
+			if got := contentOrAbsent(t, path); got != absent {
+				t.Errorf("destination = %q, want it absent", got)
 			}
 		})
 	}
@@ -681,10 +751,8 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 
 func TestResumeProgressCoversWholeFile(t *testing.T) {
 	server := newResumeServer(t, "abcdef", `"v1"`)
-	path := filepath.Join(t.TempDir(), "partial.bin")
-	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "abc")
 
 	var calls [][2]int64
 	opt := options.New().
@@ -705,4 +773,28 @@ func TestResumeProgressCoversWholeFile(t *testing.T) {
 	if last := calls[len(calls)-1]; last != [2]int64{6, 6} {
 		t.Errorf("last progress = %v, want [6 6]", last)
 	}
+}
+
+// absent stands for a file that does not exist.
+const absent = "<absent>"
+
+// writePartial writes content to the partial file that Resume continues for path.
+func writePartial(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(options.PartialPath(path), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// contentOrAbsent returns the content of path, or absent if it does not exist.
+func contentOrAbsent(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return absent
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

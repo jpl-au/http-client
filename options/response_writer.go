@@ -70,6 +70,22 @@ func (w *FileWriter) Discard() error {
 	return errors.Join(w.File.Close(), os.Remove(w.Name()))
 }
 
+// PartialWriter writes a resumed download to its partial file (see PartialPath).
+// Close keeps the partial file so a later Resume can continue it. Publish
+// renames the complete partial file to the destination.
+type PartialWriter struct {
+	*os.File
+	path string
+}
+
+// Publish closes the partial file and renames it to the destination.
+func (w *PartialWriter) Publish() error {
+	if err := w.File.Close(); err != nil {
+		return err
+	}
+	return os.Rename(w.Name(), w.path)
+}
+
 // createFor creates the new file name, which will later replace dest.
 // When dest exists, the file takes its permissions, so publishing a download
 // never changes who can read it. Otherwise the file gets 0666 less the process
@@ -100,13 +116,15 @@ func createFor(name, dest string) (*os.File, error) {
 
 // InitialiseWriter sets up the appropriate writer based on the ResponseWriter configuration.
 // Returns an error if the writer type is invalid or if required parameters are missing.
-// When resuming a download (Range.IsResume is true), files are opened in append mode.
-// Otherwise a file download goes to a FileWriter.
+// A resumed download (Range.IsResume is true) goes to a PartialWriter: it appends
+// to the partial file when a range is set, and starts the partial file again
+// otherwise. Any other file download goes to a FileWriter.
 func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 	opt.mu.Lock()
 	writerType := opt.ResponseWriter.Type
 	filePath := opt.ResponseWriter.FilePath
 	isResume := opt.Range.IsResume
+	isContinuation := opt.Range.IsSet
 	opt.mu.Unlock()
 
 	switch writerType {
@@ -116,12 +134,21 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		}
 		var writer io.WriteCloser
 		if isResume {
-			// Open in append mode for resume operations
-			file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open file: %w", err)
+			partial := PartialPath(filePath)
+			var file *os.File
+			var err error
+			if isContinuation {
+				file, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0)
+			} else {
+				if err := os.Remove(partial); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return nil, fmt.Errorf("failed to remove partial file: %w", err)
+				}
+				file, err = createFor(partial, filePath)
 			}
-			writer = file
+			if err != nil {
+				return nil, fmt.Errorf("failed to open partial file: %w", err)
+			}
+			writer = &PartialWriter{File: file, path: filePath}
 		} else {
 			// The temporary file must be in the destination's directory:
 			// a rename across file systems fails.

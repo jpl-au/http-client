@@ -22,6 +22,11 @@ var (
 	// length differs from its range.
 	ErrRangeMismatch = errors.New("response does not match the requested range")
 
+	// ErrDownloadIncomplete is returned when a resumed download receives a valid
+	// range that ends before the complete representation. The partial file keeps
+	// the bytes received, and resuming again continues from its end.
+	ErrDownloadIncomplete = errors.New("download incomplete")
+
 	// ErrPayloadNotReplayable is returned when a 307 or 308 redirect needs the request
 	// body again but the payload is a reader that can only be read once. Use []byte,
 	// string, *bytes.Buffer, a file, or a seekable reader to follow such redirects.

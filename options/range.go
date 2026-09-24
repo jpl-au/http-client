@@ -104,10 +104,14 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 	return opt
 }
 
-// Resume configures the request to resume a download to an existing partial file.
-// Each request reads the size of the file when it starts and asks for the bytes
-// from that offset, so the Option can be reused as the file grows. The response
-// is appended to the file at the same path.
+// Resume configures a download to filepath that can continue after an interruption.
+// The data goes to a partial file (see PartialPath) and is renamed to filepath
+// only when the download is complete, so filepath never holds a partial download.
+// Each request reads the size of the partial file when it starts and asks for the
+// bytes from that offset, so the Option can be reused as the file grows. An
+// interrupted request keeps the bytes it received in the partial file. A valid
+// range that ends before the complete representation returns ErrDownloadIncomplete;
+// resume again to continue.
 //
 // validator is the ETag of the response that started the file, or its
 // Last-Modified value when it has no ETag. The request sends it as If-Range, so
@@ -115,7 +119,7 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // replaced. When validator is empty or a weak ETag, nothing proves the file
 // belongs to the current resource, and the download starts from the beginning.
 //
-// If the file doesn't exist or is empty, the download starts from the beginning.
+// If the partial file doesn't exist or is empty, the download starts from the beginning.
 // Resumed downloads ask for the identity encoding.
 //
 // Example usage:
@@ -131,6 +135,12 @@ func (opt *Option) Resume(filepath string, validator string) *Option {
 	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt
+}
+
+// PartialPath returns the path of the partial file that Resume keeps for the
+// destination path until the download is complete.
+func PartialPath(path string) string {
+	return path + ".part"
 }
 
 // ClearRange removes any configured range settings.

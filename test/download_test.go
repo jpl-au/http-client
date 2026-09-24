@@ -234,12 +234,13 @@ func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	path := filepath.Join(t.TempDir(), "partial.bin")
-	writeFile(t, path, "abc")
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "abc")
 
 	resp, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	assert.Equal(t, "abc", readFile(t, path), "an error body must not be appended")
+	assert.Equal(t, "abc", readFile(t, options.PartialPath(path)), "an error body must not be appended")
+	assert.Equal(t, absent, contentOrAbsent(t, path), "an error body must not be published")
 }

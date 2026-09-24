@@ -129,7 +129,7 @@ func send(method string, url string, payload any, opt *options.Option) (response
 
 // prepareResume sets up a resumed download when the request starts.
 //
-// A partial file continues from its size at that moment, and If-Range carries
+// The partial file continues from its size at that moment, and If-Range carries
 // the validator of the representation the file holds: if the resource has
 // changed, the server sends it whole and the file is replaced. Without a strong
 // validator, nothing proves the bytes on disk belong to the current
@@ -144,21 +144,21 @@ func prepareResume(opt *options.Option) error {
 	}
 	opt.Header.Set("Accept-Encoding", "identity")
 
-	info, err := os.Stat(opt.ResponseWriter.FilePath)
+	info, err := os.Stat(options.PartialPath(opt.ResponseWriter.FilePath))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("failed to stat file for resume: %w", err)
+		return fmt.Errorf("failed to stat partial file for resume: %w", err)
 	}
 	if info.Size() == 0 {
 		return nil
 	}
 
-	// If-Range needs a strong validator (RFC 9110, section 13.1.5).
+	// If-Range needs a strong validator (RFC 9110, section 13.1.5). Without a
+	// range set, the partial file starts again.
 	validator := opt.Range.Validator
 	if validator == "" || strings.HasPrefix(validator, "W/") {
-		opt.Range.IsResume = false
 		return nil
 	}
 
@@ -480,10 +480,10 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	// A resumed download appends to the partial file, so a partial response
 	// must continue the file exactly where it ends. Any other successful
-	// response carries the whole representation and replaces the file.
+	// response carries the whole representation and starts the partial file again.
 	var resumed *response.ContentRange
 	expected := int64(-1)
-	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode < http.StatusMultipleChoices {
+	if opt.Range.IsResume && r.StatusCode < http.StatusMultipleChoices {
 		if r.StatusCode == http.StatusPartialContent {
 			cr, err := resumeRange(r, opt.Range.Start, opt.Range.Validator)
 			if err != nil {
@@ -492,7 +492,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 			resumed = cr
 			expected = cr.End - cr.Start + 1
 		} else {
-			opt.Range.IsResume = false
+			opt.Range.IsSet = false
 		}
 	}
 
@@ -555,12 +555,31 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		copyErr = checkRangeLength(body, written, expected)
 	}
 
-	// A file download that failed part way is discarded, so the destination
-	// keeps its content.
 	var closeErr error
-	if fw, ok := writer.(*options.FileWriter); ok && copyErr != nil {
-		closeErr = fw.Discard()
-	} else {
+	switch w := writer.(type) {
+	case *options.FileWriter:
+		// A file download that failed part way is discarded, so the
+		// destination keeps its content.
+		if copyErr != nil {
+			closeErr = w.Discard()
+		} else {
+			closeErr = w.Close()
+		}
+	case *options.PartialWriter:
+		// A resumed download is published only when it is complete. A range
+		// with an unknown total is taken to run to the end, as requested.
+		// Otherwise the partial file keeps what arrived for the next resume.
+		switch {
+		case copyErr != nil:
+			closeErr = w.Close()
+		case resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total:
+			closeErr = w.Close()
+			copyErr = fmt.Errorf("%w: the partial file has %d of %d bytes; resume again to continue",
+				ErrDownloadIncomplete, resumed.End+1, resumed.Total)
+		default:
+			closeErr = w.Publish()
+		}
+	default:
 		closeErr = writer.Close()
 	}
 	if copyErr != nil || closeErr != nil {
