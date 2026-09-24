@@ -63,7 +63,8 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 	}
 
 	// Configure the HTTP client and transport
-	client := configureClient(opt, state)
+	client, release := configureClient(opt, state)
+	defer release()
 
 	// Normalise the URL
 	url, err := normaliseURL(url, opt.Transport.Scheme)
@@ -122,55 +123,35 @@ func doRequestWithState(method string, url string, payload any, opt *options.Opt
 	return result, err
 }
 
-// configureClient returns an HTTP client for one request.
+// configureClient returns an HTTP client for one request and a release function
+// to call when the request is complete.
 // The base client can be shared by concurrent requests, so its settings are
 // copied into a new client and the base client is never written to.
-func configureClient(opt *options.Option, state *requestState) *http.Client {
+// A transport set on the Option takes precedence over the base client's transport.
+// Header-limit and protocol settings need a cloned transport; the clone serves
+// only this request, and release closes its idle connections.
+func configureClient(opt *options.Option, state *requestState) (*http.Client, func()) {
 	base := opt.Client()
 	client := &http.Client{
 		Transport: base.Transport,
 		Jar:       base.Jar,
 		Timeout:   base.Timeout,
 	}
-
-	// Clone transport if we need to modify per-request settings
-	needsClone := opt.Transport.MaxResponseHeaderBytes != 0 || opt.Transport.Protocol != options.Both
-	if client.Transport == nil {
-		if needsClone && opt.Transport.HTTP != nil {
-			client.Transport = opt.Transport.HTTP.Clone()
-		} else {
-			client.Transport = opt.Transport.HTTP
-		}
-	} else if needsClone {
-		if t, ok := client.Transport.(*http.Transport); ok {
-			client.Transport = t.Clone()
-		}
+	if opt.Transport.HTTP != nil {
+		client.Transport = opt.Transport.HTTP
 	}
 
-	// Apply MaxResponseHeaderBytes if configured
-	if opt.Transport.MaxResponseHeaderBytes != 0 {
-		if t, ok := client.Transport.(*http.Transport); ok {
-			t.MaxResponseHeaderBytes = opt.Transport.MaxResponseHeaderBytes
+	release := func() {}
+	if opt.Transport.MaxResponseHeaderBytes != 0 || opt.Transport.Protocol != options.Both {
+		transport := client.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
 		}
-	}
-
-	// Apply protocol configuration (HTTP/1, HTTP/2, or both)
-	if opt.Transport.Protocol != options.Both {
-		if t, ok := client.Transport.(*http.Transport); ok {
-			if t.Protocols == nil {
-				t.Protocols = new(http.Protocols)
-			}
-			switch opt.Transport.Protocol {
-			case options.HTTP1:
-				t.Protocols.SetHTTP1(true)
-				t.Protocols.SetHTTP2(false)
-			case options.HTTP2:
-				t.Protocols.SetHTTP1(false)
-				t.Protocols.SetHTTP2(true)
-			case options.UnencryptedHTTP2:
-				t.Protocols.SetHTTP1(false)
-				t.Protocols.SetUnencryptedHTTP2(true)
-			}
+		if t, ok := transport.(*http.Transport); ok {
+			t = t.Clone()
+			applyTransportConfig(t, opt.Transport)
+			client.Transport = t
+			release = t.CloseIdleConnections
 		}
 	}
 
@@ -182,7 +163,26 @@ func configureClient(opt *options.Option, state *requestState) *http.Client {
 		return http.ErrUseLastResponse
 	}
 
-	return client
+	return client, release
+}
+
+// applyTransportConfig applies header-limit and protocol settings to t.
+func applyTransportConfig(t *http.Transport, cfg options.TransportConfig) {
+	if cfg.MaxResponseHeaderBytes != 0 {
+		t.MaxResponseHeaderBytes = cfg.MaxResponseHeaderBytes
+	}
+
+	switch cfg.Protocol {
+	case options.HTTP1:
+		t.Protocols = new(http.Protocols)
+		t.Protocols.SetHTTP1(true)
+	case options.HTTP2:
+		t.Protocols = new(http.Protocols)
+		t.Protocols.SetHTTP2(true)
+	case options.UnencryptedHTTP2:
+		t.Protocols = new(http.Protocols)
+		t.Protocols.SetUnencryptedHTTP2(true)
+	}
 }
 
 // preparePayload creates the payload reader for the request.

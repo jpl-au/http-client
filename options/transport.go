@@ -51,6 +51,7 @@ const (
 // TransportConfig holds transport and protocol settings.
 type TransportConfig struct {
 	// HTTP is the HTTP transport to use for requests.
+	// When nil, requests use the client's transport, which shares its connection pool.
 	HTTP *http.Transport
 
 	// MaxResponseHeaderBytes limits the size of response headers including 1xx responses.
@@ -65,11 +66,9 @@ type TransportConfig struct {
 }
 
 // defaultTransportConfig returns the default transport configuration.
-// Uses cloneTransport() to ensure each Option gets an isolated copy,
-// preventing mutations from affecting the global http.DefaultTransport.
+// It sets no transport, so requests share the client's connection pool.
 func defaultTransportConfig() TransportConfig {
 	return TransportConfig{
-		HTTP:     cloneTransport(),
 		Protocol: Both,
 	}
 }
