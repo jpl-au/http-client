@@ -416,9 +416,17 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 	defer decompressedBody.Close()
 
-	writer, err := opt.InitialiseWriter()
-	if err != nil {
-		return resp, fmt.Errorf("failed to initialise writer: %w", err)
+	// A file destination receives only a successful response. Any other
+	// response goes to a buffer, so the caller can read the error body and
+	// the file keeps its content.
+	var writer io.WriteCloser
+	if opt.ResponseWriter.Type == options.WriteToFile && r.StatusCode >= http.StatusMultipleChoices {
+		writer = &options.WriteCloserBuffer{Buffer: &bytes.Buffer{}}
+	} else {
+		writer, err = opt.InitialiseWriter()
+		if err != nil {
+			return resp, fmt.Errorf("failed to initialise writer: %w", err)
+		}
 	}
 
 	totalSize := r.ContentLength
@@ -439,7 +447,14 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		_, copyErr = io.Copy(writer, reader)
 	}
 
-	closeErr := writer.Close()
+	// A file download that failed part way is discarded, so the destination
+	// keeps its content.
+	var closeErr error
+	if fw, ok := writer.(*options.FileWriter); ok && copyErr != nil {
+		closeErr = fw.Discard()
+	} else {
+		closeErr = writer.Close()
+	}
 	if copyErr != nil || closeErr != nil {
 		err = errors.Join(copyErr, closeErr)
 		resp.Error = err

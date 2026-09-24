@@ -2,9 +2,11 @@ package options
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 // ResponseWriterType defines how the HTTP response body should be handled.
@@ -42,9 +44,35 @@ type ResponseWriter struct {
 	writer io.WriteCloser
 }
 
+// FileWriter writes a download to a temporary file beside its destination.
+// Close renames the temporary file to the destination, so the destination
+// changes only when the whole body has arrived. Discard removes the temporary
+// file and leaves the destination as it was.
+type FileWriter struct {
+	*os.File
+	path string
+}
+
+// Close closes the temporary file and renames it to the destination.
+func (w *FileWriter) Close() error {
+	if err := w.File.Close(); err != nil {
+		return errors.Join(err, os.Remove(w.Name()))
+	}
+	if err := os.Rename(w.Name(), w.path); err != nil {
+		return errors.Join(err, os.Remove(w.Name()))
+	}
+	return nil
+}
+
+// Discard closes and removes the temporary file.
+func (w *FileWriter) Discard() error {
+	return errors.Join(w.File.Close(), os.Remove(w.Name()))
+}
+
 // InitialiseWriter sets up the appropriate writer based on the ResponseWriter configuration.
 // Returns an error if the writer type is invalid or if required parameters are missing.
 // When resuming a download (Range.IsResume is true), files are opened in append mode.
+// Otherwise a file download goes to a FileWriter.
 func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 	opt.mu.Lock()
 	writerType := opt.ResponseWriter.Type
@@ -57,22 +85,30 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		if filePath == "" {
 			return nil, ErrMissingFilePath
 		}
-		var file *os.File
-		var err error
+		var writer io.WriteCloser
 		if isResume {
 			// Open in append mode for resume operations
-			file, err = os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+			file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open file: %w", err)
+			}
+			writer = file
 		} else {
-			// Create/truncate for new downloads
-			file, err = os.Create(filePath)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to open file: %w", err)
+			// The temporary file must be in the destination's directory:
+			// a rename across file systems fails.
+			file, err := os.CreateTemp(filepath.Dir(filePath), filepath.Base(filePath)+".*.part")
+			if err != nil {
+				return nil, fmt.Errorf("failed to create file: %w", err)
+			}
+			if err := file.Chmod(0644); err != nil {
+				return nil, errors.Join(fmt.Errorf("failed to set file mode: %w", err), file.Close(), os.Remove(file.Name()))
+			}
+			writer = &FileWriter{File: file, path: filePath}
 		}
 		opt.mu.Lock()
-		opt.ResponseWriter.writer = file
+		opt.ResponseWriter.writer = writer
 		opt.mu.Unlock()
-		return file, nil
+		return writer, nil
 	case WriteToBuffer:
 		if filePath != "" {
 			return nil, ErrUnexpectedFilePath

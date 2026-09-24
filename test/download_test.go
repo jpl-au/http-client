@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -152,4 +153,93 @@ func TestBodylessResponsesLeaveFileOutput(t *testing.T) {
 			assert.Equal(t, "existing", readFile(t, path), "a response without a body must not change the file")
 		})
 	}
+}
+
+// dirEntries returns the names of the files in dir.
+func dirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestFileOutputKeepsDestinationOnErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	writeFile(t, path, "valid")
+
+	resp, err := client.Get(server.URL, options.New().SetFileOutput(path))
+	require.NoError(t, err, "an error status is a response, not a transport failure")
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, "server error\n", resp.String(), "the error body should be in the response")
+	assert.Equal(t, "valid", readFile(t, path), "an error status must not change the file")
+	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir))
+}
+
+func TestFileOutputKeepsDestinationOnTruncatedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+		conn.Close()
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	writeFile(t, path, "valid")
+
+	_, err := client.Get(server.URL, options.New().SetFileOutput(path))
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+
+	assert.Equal(t, "valid", readFile(t, path), "a truncated body must not replace the file")
+	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir), "the temporary file should be removed")
+}
+
+func TestFileOutputReplacesDestinationOnSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new content"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	writeFile(t, path, "old")
+
+	_, err := client.Get(server.URL, options.New().SetFileOutput(path))
+	require.NoError(t, err)
+
+	assert.Equal(t, "new content", readFile(t, path))
+	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir), "the temporary file should be renamed into place")
+}
+
+func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "partial.bin")
+	writeFile(t, path, "abc")
+
+	resp, err := client.Get(server.URL, options.New().Resume(path))
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, "abc", readFile(t, path), "an error body must not be appended")
 }
