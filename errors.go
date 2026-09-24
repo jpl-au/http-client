@@ -16,6 +16,12 @@ var (
 	// ErrMissingHost is returned when the URL has no host component.
 	ErrMissingHost = errors.New("missing host")
 
+	// ErrRangeMismatch is returned when a resumed download receives a partial
+	// response that does not continue the partial file: a missing or invalid
+	// Content-Range, another range unit, another start offset, or a body whose
+	// length differs from its range.
+	ErrRangeMismatch = errors.New("response does not match the requested range")
+
 	// ErrPayloadNotReplayable is returned when a 307 or 308 redirect needs the request
 	// body again but the payload is a reader that can only be read once. Use []byte,
 	// string, *bytes.Buffer, a file, or a seekable reader to follow such redirects.

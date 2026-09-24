@@ -3,6 +3,8 @@ package response
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,9 +17,9 @@ import (
 type ContentRange struct {
 	// Unit is the range unit, typically "bytes"
 	Unit string
-	// Start is the starting byte offset of the range
+	// Start is the starting byte offset of the range, or -1 for an unsatisfied range
 	Start int64
-	// End is the ending byte offset of the range (inclusive)
+	// End is the ending byte offset of the range (inclusive), or -1 for an unsatisfied range
 	End int64
 	// Total is the total size of the resource, or -1 if unknown (indicated by "*")
 	Total int64
@@ -60,7 +62,7 @@ type Response struct {
 	Location   string // New location if the request was redirected
 
 	// Range response fields (RFC 7233)
-	ContentRange     *ContentRange // Parsed Content-Range header for 206 responses
+	ContentRange     *ContentRange // Parsed Content-Range header, or nil if absent or invalid
 	AcceptRanges     string        // Accept-Ranges header value (e.g., "bytes" or "none")
 	IsPartialContent bool          // True if response is 206 Partial Content
 }
@@ -134,60 +136,66 @@ func (r *Response) PopulateResponse(resp *http.Response, start time.Time) {
 	r.AcceptRanges = resp.Header.Get("Accept-Ranges")
 	r.IsPartialContent = resp.StatusCode == http.StatusPartialContent
 
-	if contentRange := resp.Header.Get("Content-Range"); contentRange != "" {
-		r.ContentRange = parseContentRange(contentRange)
+	// An invalid header leaves ContentRange nil, as documented on the field.
+	// ParseContentRange reports the reason to callers that need it.
+	if cr, err := ParseContentRange(resp.Header.Get("Content-Range")); err == nil {
+		r.ContentRange = cr
 	}
 }
 
-// parseContentRange parses a Content-Range header value.
-// Format: "bytes start-end/total" or "bytes start-end/*"
-// Example: "bytes 0-499/1234" or "bytes 500-999/*"
-func parseContentRange(header string) *ContentRange {
-	// Split on space to get unit and range-spec
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 {
-		return nil
+// ErrInvalidContentRange is returned by ParseContentRange for a malformed header.
+var ErrInvalidContentRange = errors.New("invalid Content-Range header")
+
+// ParseContentRange parses a Content-Range header value (RFC 9110, section 14.4).
+// Formats: "bytes 0-499/1234", "bytes 500-999/*", and "bytes */1234" for an
+// unsatisfied range, which has Start and End of -1.
+// It returns an error wrapping ErrInvalidContentRange for a malformed header,
+// or for bounds that are negative, reversed, or beyond the total.
+func ParseContentRange(header string) (*ContentRange, error) {
+	invalid := fmt.Errorf("%w: %q", ErrInvalidContentRange, header)
+
+	unit, spec, ok := strings.Cut(header, " ")
+	if !ok || unit == "" {
+		return nil, invalid
+	}
+	bounds, total, ok := strings.Cut(spec, "/")
+	if !ok {
+		return nil, invalid
 	}
 
-	cr := &ContentRange{
-		Unit:  parts[0],
-		Total: -1,
-	}
-
-	rangeSpec := parts[1]
-
-	// Split on "/" to get range and total
-	rangeParts := strings.SplitN(rangeSpec, "/", 2)
-	if len(rangeParts) != 2 {
-		return nil
-	}
-
-	// Parse total (may be "*" for unknown)
-	if rangeParts[1] != "*" {
-		total, err := strconv.ParseInt(rangeParts[1], 10, 64)
-		if err != nil {
-			return nil
+	cr := &ContentRange{Unit: unit, Start: -1, End: -1, Total: -1}
+	if total != "*" {
+		n, err := strconv.ParseInt(total, 10, 64)
+		if err != nil || n < 0 {
+			return nil, invalid
 		}
-		cr.Total = total
+		cr.Total = n
 	}
 
-	// Parse start-end range
-	rangeBounds := strings.SplitN(rangeParts[0], "-", 2)
-	if len(rangeBounds) != 2 {
-		return nil
+	// An unsatisfied range must state the complete length.
+	if bounds == "*" {
+		if cr.Total < 0 {
+			return nil, invalid
+		}
+		return cr, nil
 	}
 
-	start, err := strconv.ParseInt(rangeBounds[0], 10, 64)
+	first, last, ok := strings.Cut(bounds, "-")
+	if !ok {
+		return nil, invalid
+	}
+	start, err := strconv.ParseInt(first, 10, 64)
 	if err != nil {
-		return nil
+		return nil, invalid
+	}
+	end, err := strconv.ParseInt(last, 10, 64)
+	if err != nil {
+		return nil, invalid
+	}
+	if start < 0 || end < start || (cr.Total >= 0 && end >= cr.Total) {
+		return nil, invalid
 	}
 	cr.Start = start
-
-	end, err := strconv.ParseInt(rangeBounds[1], 10, 64)
-	if err != nil {
-		return nil
-	}
 	cr.End = end
-
-	return cr
+	return cr, nil
 }

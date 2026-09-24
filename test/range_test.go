@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
+	"github.com/jpl-au/http-client/response"
 )
 
 func TestPartialContentResponse(t *testing.T) {
@@ -491,5 +493,96 @@ func TestResumeOptionReuseUsesCurrentFileSize(t *testing.T) {
 	ranges, _ := server.received()
 	if want := []string{"bytes=3-", "bytes=6-"}; !slices.Equal(ranges, want) {
 		t.Errorf("Range headers = %q, want %q", ranges, want)
+	}
+}
+
+func TestResumeValidatesResponse(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		contentRange string
+		body         string
+		wantFile     string
+		wantErr      error
+	}{
+		{"valid continuation", http.StatusPartialContent, "bytes 3-5/6", "def", "abcdef", nil},
+		{"full response restarts the file", http.StatusOK, "", "abcdef", "abcdef", nil},
+		{"wrong start", http.StatusPartialContent, "bytes 0-2/6", "abc", "abc", client.ErrRangeMismatch},
+		{"unsatisfiable range", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", "abc", nil},
+		{"server error", http.StatusInternalServerError, "", "server error", "abc", nil},
+		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", "abcd", client.ErrRangeMismatch},
+		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", "abcdef", client.ErrRangeMismatch},
+		{"missing Content-Range", http.StatusPartialContent, "", "def", "abc", client.ErrRangeMismatch},
+		{"other range unit", http.StatusPartialContent, "items 3-5/6", "def", "abc", client.ErrRangeMismatch},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.contentRange != "" {
+					w.Header().Set("Content-Range", tt.contentRange)
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(len(tt.body)))
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			path := filepath.Join(t.TempDir(), "partial.bin")
+			if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := client.Get(server.URL, options.New().Resume(path))
+			if tt.wantErr == nil && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.wantFile {
+				t.Errorf("file = %q, want %q", got, tt.wantFile)
+			}
+		})
+	}
+}
+
+func TestParseContentRangeValues(t *testing.T) {
+	tests := []struct {
+		header string
+		want   *response.ContentRange
+	}{
+		{"bytes 0-499/1234", &response.ContentRange{Unit: "bytes", Start: 0, End: 499, Total: 1234}},
+		{"bytes 500-999/*", &response.ContentRange{Unit: "bytes", Start: 500, End: 999, Total: -1}},
+		{"bytes */3", &response.ContentRange{Unit: "bytes", Start: -1, End: -1, Total: 3}},
+		{"bytes 5-2/10", nil},
+		{"bytes 0-10/5", nil},
+		{"bytes -1-2/5", nil},
+		{"bytes */*", nil},
+		{"bytes", nil},
+		{"", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.header, func(t *testing.T) {
+			got, err := response.ParseContentRange(tt.header)
+			if tt.want == nil {
+				if !errors.Is(err, response.ErrInvalidContentRange) {
+					t.Errorf("err = %v, want ErrInvalidContentRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if *got != *tt.want {
+				t.Errorf("got %+v, want %+v", *got, *tt.want)
+			}
+		})
 	}
 }

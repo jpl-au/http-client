@@ -436,6 +436,23 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	encoding := r.Header.Get("Content-Encoding")
 
+	// A resumed download appends to the partial file, so a partial response
+	// must continue the file exactly where it ends. Any other successful
+	// response carries the whole representation and replaces the file.
+	expected := int64(-1)
+	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode < http.StatusMultipleChoices {
+		if r.StatusCode == http.StatusPartialContent {
+			length, err := resumeLength(r, opt.Range.Start)
+			if err != nil {
+				resp.Error = err
+				return resp, err
+			}
+			expected = length
+		} else {
+			opt.Range.IsResume = false
+		}
+	}
+
 	decompressedBody, err := opt.NewDecompressor(r.Body, encoding)
 	if err != nil {
 		return resp, fmt.Errorf("failed to create decompressed reader: %w", err)
@@ -465,12 +482,23 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		reader = options.NewProgressReader(decompressedBody, totalSize, opt.Progress.OnDownload)
 	}
 
+	// Write no more than the range, so surplus bytes never reach the file.
+	body := reader
+	if expected >= 0 {
+		reader = io.LimitReader(body, expected)
+	}
+
+	var written int64
 	var copyErr error
 	if opt.Progress.DownloadBufferSize != nil {
 		buf := make([]byte, *opt.Progress.DownloadBufferSize)
-		_, copyErr = io.CopyBuffer(writer, reader, buf)
+		written, copyErr = io.CopyBuffer(writer, reader, buf)
 	} else {
-		_, copyErr = io.Copy(writer, reader)
+		written, copyErr = io.Copy(writer, reader)
+	}
+
+	if copyErr == nil && expected >= 0 {
+		copyErr = checkRangeLength(body, written, expected)
 	}
 
 	// A file download that failed part way is discarded, so the destination
@@ -511,4 +539,38 @@ func hasBody(r *http.Response) bool {
 		return false
 	}
 	return true
+}
+
+// resumeLength returns the length of a partial response to a resumed download.
+// It returns an error wrapping ErrRangeMismatch unless the response has a valid
+// bytes Content-Range that starts at offset, the end of the partial file.
+func resumeLength(r *http.Response, offset int64) (int64, error) {
+	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrRangeMismatch, err)
+	}
+	if cr.Unit != "bytes" {
+		return 0, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
+	}
+	if cr.Start != offset {
+		return 0, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, offset)
+	}
+	return cr.End - cr.Start + 1, nil
+}
+
+// checkRangeLength returns an error wrapping ErrRangeMismatch when the body
+// held fewer or more bytes than its range. A complete HTTP message can still
+// carry fewer bytes than its Content-Range states.
+func checkRangeLength(body io.Reader, written, expected int64) error {
+	if written < expected {
+		return fmt.Errorf("%w: body has %d bytes, range has %d", ErrRangeMismatch, written, expected)
+	}
+	extra, err := io.Copy(io.Discard, io.LimitReader(body, 1))
+	if err != nil {
+		return fmt.Errorf("failed to read past the range: %w", err)
+	}
+	if extra > 0 {
+		return fmt.Errorf("%w: body is longer than its range of %d bytes", ErrRangeMismatch, expected)
+	}
+	return nil
 }
