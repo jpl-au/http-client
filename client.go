@@ -388,6 +388,7 @@ func (c *Client) Trace(url string, opts ...*options.Option) (response.Response, 
 // Custom performs a custom HTTP method to the specified URL with the given payload.
 // It accepts the HTTP method as its first argument, the URL string as the second argument,
 // the payload as the third argument, and optionally additional Options to customize the request.
+// The payload is sent as the request body whatever the method.
 // Returns the HTTP response and an error if any.
 func (c *Client) Custom(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(method, url, payload, opts...)

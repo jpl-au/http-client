@@ -77,7 +77,7 @@ func send(method string, url string, payload any, opt *options.Option) (response
 		return resp, err
 	}
 
-	source, err := preparePayload(method, payload, opt)
+	source, err := preparePayload(payload, opt)
 	if err != nil {
 		return resp, err
 	}
@@ -255,13 +255,8 @@ type payloadSource struct {
 }
 
 // preparePayload returns the source of the request payload, or nil when the
-// request has no payload.
-func preparePayload(method string, payload any, opt *options.Option) (*payloadSource, error) {
-	// Only POST, PUT, PATCH can have payloads
-	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
-		return nil, nil
-	}
-
+// request has no payload. A payload is sent with any method.
+func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 	// If payload is an *os.File and no file path is configured, extract the path
 	// so we can reopen the file fresh for redirects/retries instead of reusing
 	// the caller's handle (which may have an inconsistent position).

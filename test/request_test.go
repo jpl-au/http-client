@@ -329,3 +329,19 @@ func TestUploadEmptyFile(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, received)
 }
+
+func TestCustomMethodSendsPayload(t *testing.T) {
+	var method, body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		method, body = r.Method, string(data)
+	}))
+	defer server.Close()
+
+	for _, m := range []string{"PROPFIND", http.MethodDelete} {
+		_, err := client.Custom(m, server.URL, "payload")
+		require.NoError(t, err)
+		assert.Equal(t, m, method)
+		assert.Equal(t, "payload", body, "the payload of a %s request should be sent", m)
+	}
+}
