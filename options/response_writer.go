@@ -71,11 +71,22 @@ func (w *FileWriter) Discard() error {
 }
 
 // PartialWriter writes a resumed download to its partial file (see PartialPath).
-// Close keeps the partial file so a later Resume can continue it. Publish
-// renames the complete partial file to the destination.
+// Close keeps the partial file so a later Resume can continue it. Discard
+// removes the bytes this response added. Publish renames the complete partial
+// file to the destination.
 type PartialWriter struct {
 	*os.File
-	path string
+	path   string
+	offset int64 // Size of the partial file before this response.
+}
+
+// Discard truncates the partial file to its size before this response, so it
+// holds only data that passed validation, and closes it.
+func (w *PartialWriter) Discard() error {
+	if err := w.Truncate(w.offset); err != nil {
+		return errors.Join(err, w.File.Close())
+	}
+	return w.File.Close()
 }
 
 // Publish closes the partial file and renames it to the destination.
@@ -136,9 +147,13 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		if isResume {
 			partial := PartialPath(filePath)
 			var file *os.File
+			var offset int64
 			var err error
 			if isContinuation {
 				file, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0)
+				if err == nil {
+					offset, err = file.Seek(0, io.SeekEnd)
+				}
 			} else {
 				if err := os.Remove(partial); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return nil, fmt.Errorf("failed to remove partial file: %w", err)
@@ -148,7 +163,7 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to open partial file: %w", err)
 			}
-			writer = &PartialWriter{File: file, path: filePath}
+			writer = &PartialWriter{File: file, path: filePath, offset: offset}
 		} else {
 			// The temporary file must be in the destination's directory:
 			// a rename across file systems fails.

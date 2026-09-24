@@ -531,8 +531,9 @@ func TestResumeValidatesResponse(t *testing.T) {
 		{"wrong start", http.StatusPartialContent, "bytes 0-2/6", "abc", absent, "abc", client.ErrRangeMismatch},
 		{"unsatisfiable range", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", absent, "abc", nil},
 		{"server error", http.StatusInternalServerError, "", "server error", absent, "abc", nil},
-		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", absent, "abcd", client.ErrRangeMismatch},
-		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", absent, "abcdef", client.ErrRangeMismatch},
+		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", absent, "abc", client.ErrRangeMismatch},
+		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", absent, "abc", client.ErrRangeMismatch},
+		{"wrong bytes longer than range", http.StatusPartialContent, "bytes 3-5/6", "XYZextra", absent, "abc", client.ErrRangeMismatch},
 		{"missing Content-Range", http.StatusPartialContent, "", "def", absent, "abc", client.ErrRangeMismatch},
 		{"other range unit", http.StatusPartialContent, "items 3-5/6", "def", absent, "abc", client.ErrRangeMismatch},
 	}

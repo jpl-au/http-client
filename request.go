@@ -568,8 +568,11 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	case *options.PartialWriter:
 		// A resumed download is published only when it is complete. A range
 		// with an unknown total is taken to run to the end, as requested.
+		// A response that failed validation is removed from the partial file.
 		// Otherwise the partial file keeps what arrived for the next resume.
 		switch {
+		case errors.Is(copyErr, ErrRangeMismatch):
+			closeErr = w.Discard()
 		case copyErr != nil:
 			closeErr = w.Close()
 		case resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total:
