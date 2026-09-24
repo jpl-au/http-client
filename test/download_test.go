@@ -237,7 +237,7 @@ func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "download.bin")
 	writePartial(t, path, "abc")
 
-	resp, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+	resp, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)

@@ -183,7 +183,7 @@ func TestResume(t *testing.T) {
 	}
 
 	// Step 2: Resume download from where we left off
-	opt = options.New().Resume(pf, resp.Header.Get("ETag"))
+	opt = options.New().Resume(pf, resp.Header)
 	resp, err = c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("resume download failed: %v", err)
@@ -231,7 +231,7 @@ func TestResumeFromNonExistentFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "new.bin")
 
 	// Resume with non-existent file should start fresh (no Range header)
-	opt := options.New().Resume(f, "")
+	opt := options.New().Resume(f, nil)
 	resp, err := c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -266,7 +266,7 @@ func TestResumeFromEmptyFile(t *testing.T) {
 	f.Close()
 
 	// Resume with empty file should start fresh
-	opt := options.New().Resume(ef, "")
+	opt := options.New().Resume(ef, nil)
 	resp, err := c.Get(server.URL+"/download/range", opt)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -499,7 +499,7 @@ func TestResumeOptionReuseUsesCurrentFileSize(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "download.bin")
 	writePartial(t, path, "abc")
 
-	opt := options.New().Resume(path, `"v1"`)
+	opt := options.New().Resume(path, etag(`"v1"`))
 	if _, err := client.Get(server.URL, opt); !errors.Is(err, client.ErrDownloadIncomplete) {
 		t.Fatalf("first resume: err = %v, want ErrDownloadIncomplete", err)
 	}
@@ -553,7 +553,7 @@ func TestResumeValidatesResponse(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "download.bin")
 			writePartial(t, path, "abc")
 
-			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+			_, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
 			if tt.wantErr == nil && err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -587,7 +587,7 @@ func TestResumeLeavesDestinationUntilComplete(t *testing.T) {
 	}
 	writePartial(t, path, "abc")
 
-	_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+	_, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
 	if !errors.Is(err, client.ErrDownloadIncomplete) {
 		t.Errorf("err = %v, want ErrDownloadIncomplete", err)
 	}
@@ -619,7 +619,7 @@ func TestFreshResumeKeepsDestinationOnTruncatedBody(t *testing.T) {
 				}
 			}
 
-			_, err := client.Get(server.URL, options.New().Resume(path, ""))
+			_, err := client.Get(server.URL, options.New().Resume(path, nil))
 			if !errors.Is(err, io.ErrUnexpectedEOF) {
 				t.Errorf("err = %v, want unexpected EOF", err)
 			}
@@ -691,7 +691,7 @@ func TestResumeRepresentationIdentity(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "download.bin")
 			writePartial(t, path, tt.local)
 
-			if _, err := client.Get(server.URL, options.New().Resume(path, tt.validator)); err != nil {
+			if _, err := client.Get(server.URL, options.New().Resume(path, etag(tt.validator))); err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
 
@@ -715,6 +715,7 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 		header http.Header
 	}{
 		{"different ETag", http.Header{"Etag": {`"v2"`}}},
+		{"different Last-Modified", http.Header{"Last-Modified": {"Tue, 22 Sep 2026 10:00:00 GMT"}}},
 		{"encoded body", http.Header{"Content-Encoding": {"gzip"}}},
 	}
 
@@ -733,7 +734,8 @@ func TestResumeRejectsOtherRepresentation(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "download.bin")
 			writePartial(t, path, "OLD")
 
-			_, err := client.Get(server.URL, options.New().Resume(path, `"v1"`))
+			from := http.Header{"Etag": {`"v1"`}, "Last-Modified": {"Mon, 21 Sep 2026 10:00:00 GMT"}}
+			_, err := client.Get(server.URL, options.New().Resume(path, from))
 			if !errors.Is(err, client.ErrRangeMismatch) {
 				t.Errorf("err = %v, want ErrRangeMismatch", err)
 			}
@@ -757,7 +759,7 @@ func TestResumeProgressCoversWholeFile(t *testing.T) {
 
 	var calls [][2]int64
 	opt := options.New().
-		Resume(path, `"v1"`).
+		Resume(path, etag(`"v1"`)).
 		OnDownloadProgress(func(current, total int64) {
 			calls = append(calls, [2]int64{current, total})
 		})
@@ -798,4 +800,86 @@ func contentOrAbsent(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// etag returns a response header holding value as its ETag, or no header if
+// value is empty.
+func etag(value string) http.Header {
+	if value == "" {
+		return nil
+	}
+	return http.Header{"Etag": {value}}
+}
+
+func TestResumeValidatorForms(t *testing.T) {
+	const modified = "Mon, 21 Sep 2026 10:00:00 GMT"
+	tests := []struct {
+		name        string
+		from        http.Header
+		wantIfRange string
+	}{
+		{"strong ETag", http.Header{"Etag": {`"v1"`}}, `"v1"`},
+		{"weak ETag", http.Header{"Etag": {`W/"v1"`}}, ""},
+		{"malformed ETag", http.Header{"Etag": {"not-a-validator"}}, ""},
+		{"strong date", http.Header{"Last-Modified": {modified}, "Date": {"Mon, 21 Sep 2026 10:00:01 GMT"}}, modified},
+		{"date equal to Last-Modified", http.Header{"Last-Modified": {modified}, "Date": {modified}}, ""},
+		{"date without Date header", http.Header{"Last-Modified": {modified}}, ""},
+		{"malformed date", http.Header{"Last-Modified": {"yesterday"}, "Date": {"Mon, 21 Sep 2026 10:00:01 GMT"}}, ""},
+		{"date alongside a weak ETag", http.Header{"Etag": {`W/"v1"`}, "Last-Modified": {modified}, "Date": {"Mon, 21 Sep 2026 10:00:01 GMT"}}, ""},
+		{"no header", nil, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotRange, gotIfRange string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotRange, gotIfRange = r.Header.Get("Range"), r.Header.Get("If-Range")
+				_, _ = w.Write([]byte("abcdef"))
+			}))
+			defer server.Close()
+
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, "abc")
+
+			if _, err := client.Get(server.URL, options.New().Resume(path, tt.from)); err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+
+			if gotIfRange != tt.wantIfRange {
+				t.Errorf("If-Range = %q, want %q", gotIfRange, tt.wantIfRange)
+			}
+			wantRange := ""
+			if tt.wantIfRange != "" {
+				wantRange = "bytes=3-"
+			}
+			if gotRange != wantRange {
+				t.Errorf("Range = %q, want %q", gotRange, wantRange)
+			}
+		})
+	}
+}
+
+func TestResumeRejectsDifferentLastModifiedWithDateValidator(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified", "Tue, 22 Sep 2026 10:00:00 GMT")
+		w.Header().Set("Content-Range", "bytes 3-5/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("new"))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "OLD")
+
+	from := http.Header{"Last-Modified": {"Mon, 21 Sep 2026 10:00:00 GMT"}, "Date": {"Mon, 21 Sep 2026 10:00:01 GMT"}}
+	_, err := client.Get(server.URL, options.New().Resume(path, from))
+	if !errors.Is(err, client.ErrRangeMismatch) {
+		t.Errorf("err = %v, want ErrRangeMismatch", err)
+	}
+	if got := contentOrAbsent(t, options.PartialPath(path)); got != "OLD" {
+		t.Errorf("partial file = %q, want %q", got, "OLD")
+	}
+	if got := contentOrAbsent(t, path); got != absent {
+		t.Errorf("destination = %q, want it absent", got)
+	}
 }

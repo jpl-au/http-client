@@ -485,7 +485,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	expected := int64(-1)
 	if opt.Range.IsResume && r.StatusCode < http.StatusMultipleChoices {
 		if r.StatusCode == http.StatusPartialContent {
-			cr, err := resumeRange(r, opt.Range.Start, opt.Range.Validator)
+			cr, err := resumeRange(r, opt.Range)
 			if err != nil {
 				return resp, err
 			}
@@ -617,15 +617,18 @@ func hasBody(r *http.Response) bool {
 
 // resumeRange returns the range of a partial response to a resumed download.
 // It returns an error wrapping ErrRangeMismatch unless the response has a valid
-// bytes Content-Range that starts at offset, the end of the partial file, and
-// belongs to the representation the file holds: no content encoding, and the
-// same ETag as validator when both are ETags.
-func resumeRange(r *http.Response, offset int64, validator string) (*response.ContentRange, error) {
+// bytes Content-Range that starts at the end of the partial file, and belongs
+// to the representation the file holds: no content encoding, and no ETag or
+// Last-Modified value that differs from the response that started the file.
+func resumeRange(r *http.Response, rc options.RangeConfig) (*response.ContentRange, error) {
 	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
 	}
-	if etag := r.Header.Get("ETag"); etag != "" && strings.HasPrefix(validator, `"`) && etag != validator {
-		return nil, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, validator)
+	if etag := r.Header.Get("ETag"); etag != "" && rc.ETag != "" && etag != rc.ETag {
+		return nil, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, rc.ETag)
+	}
+	if modified := r.Header.Get("Last-Modified"); modified != "" && rc.LastModified != "" && !sameTime(modified, rc.LastModified) {
+		return nil, fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, modified, rc.LastModified)
 	}
 
 	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
@@ -635,8 +638,8 @@ func resumeRange(r *http.Response, offset int64, validator string) (*response.Co
 	if cr.Unit != "bytes" {
 		return nil, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
 	}
-	if cr.Start != offset {
-		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, offset)
+	if cr.Start != rc.Start {
+		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, rc.Start)
 	}
 	return cr, nil
 }
@@ -656,4 +659,15 @@ func checkRangeLength(body io.Reader, written, expected int64) error {
 		return fmt.Errorf("%w: body is longer than its range of %d bytes", ErrRangeMismatch, expected)
 	}
 	return nil
+}
+
+// sameTime reports whether two HTTP dates name the same time. Values that do
+// not parse are compared as text.
+func sameTime(a, b string) bool {
+	ta, errA := http.ParseTime(a)
+	tb, errB := http.ParseTime(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ta.Equal(tb)
 }

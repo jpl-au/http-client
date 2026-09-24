@@ -2,6 +2,8 @@ package options
 
 import (
 	"fmt"
+	"net/http"
+	"time"
 )
 
 // RangeConfig holds configuration for HTTP Range requests (RFC 7233).
@@ -26,9 +28,15 @@ type RangeConfig struct {
 	// When true, the response writer should open in append mode.
 	IsResume bool
 
-	// Validator is the ETag, or the Last-Modified value, of the representation
-	// that the partial file holds. A resumed request sends it as If-Range.
+	// Validator is the strong validator of the representation that the partial
+	// file holds, sent as If-Range, or empty when there is none.
 	Validator string
+
+	// ETag and LastModified are the values from the response that started the
+	// partial file. A resumed response that states different values belongs to
+	// another representation.
+	ETag         string
+	LastModified string
 
 	// err records an invalid range passed to a setter. The request fails with it.
 	err error
@@ -113,28 +121,79 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // range that ends before the complete representation returns ErrDownloadIncomplete;
 // resume again to continue.
 //
-// validator is the ETag of the response that started the file, or its
-// Last-Modified value when it has no ETag. The request sends it as If-Range, so
-// if the resource has changed, the server sends it whole and the file is
-// replaced. When validator is empty or a weak ETag, nothing proves the file
-// belongs to the current resource, and the download starts from the beginning.
+// from is the header of the response that started the partial file, usually
+// resp.Header from the earlier attempt. Resume sends its strong validator as
+// If-Range, so if the resource has changed, the server sends it whole and the
+// partial file starts again. When from has no strong validator, nothing proves
+// the partial file belongs to the current resource, and the download starts
+// from the beginning. See resumeValidator for the rules.
 //
 // If the partial file doesn't exist or is empty, the download starts from the beginning.
 // Resumed downloads ask for the identity encoding.
 //
 // Example usage:
 //
-//	opt := options.New().Resume("/path/to/partial.bin", etag)
+//	opt := options.New().Resume("/path/to/file.bin", previous.Header)
 //	resp, err := client.Get("https://example.com/file.bin", opt)
-func (opt *Option) Resume(filepath string, validator string) *Option {
+func (opt *Option) Resume(filepath string, from http.Header) *Option {
 	// Always set file output - either appending or creating fresh
 	opt.SetFileOutput(filepath)
 
 	opt.mu.Lock()
-	opt.Range = RangeConfig{IsResume: true, Validator: validator}
+	opt.Range = RangeConfig{
+		IsResume:     true,
+		Validator:    resumeValidator(from),
+		ETag:         from.Get("ETag"),
+		LastModified: from.Get("Last-Modified"),
+	}
 	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt
+}
+
+// resumeValidator returns the value to send as If-Range for a partial file
+// that came from a response with header from, or "" when it has no strong
+// validator (RFC 9110, section 13.1.5).
+//
+// A strong ETag is used when present. A date is used only when the response
+// has no ETag at all, and only when it is strong: the response's Date must be
+// at least one second after its Last-Modified (RFC 9110, section 8.8.2.2).
+// A header that does not parse gives no validator.
+func resumeValidator(from http.Header) string {
+	if etag := from.Get("ETag"); etag != "" {
+		if isStrongETag(etag) {
+			return etag
+		}
+		return ""
+	}
+
+	modified, err := http.ParseTime(from.Get("Last-Modified"))
+	if err != nil {
+		return ""
+	}
+	date, err := http.ParseTime(from.Get("Date"))
+	if err != nil {
+		return ""
+	}
+	if date.Sub(modified) < time.Second {
+		return ""
+	}
+	return from.Get("Last-Modified")
+}
+
+// isStrongETag reports whether v is a strong entity tag: a quoted string of
+// etagc characters (RFC 9110, section 8.8.3).
+func isStrongETag(v string) bool {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return false
+	}
+	for i := 1; i < len(v)-1; i++ {
+		c := v[i]
+		if c != 0x21 && (c < 0x23 || c > 0x7e) && c < 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // PartialPath returns the path of the partial file that Resume keeps for the
