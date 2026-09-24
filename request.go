@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -40,9 +41,13 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
 	// One identifier names the request in the trace header and in the response.
+	// With tracing off, the response still needs its own identifier: a Client
+	// keys its response history by it.
 	id := opt.GenerateIdentifier()
 	if opt.Tracing.Type != options.IdentifierNone {
 		opt.AddHeader("X-Trace-ID", id)
+	} else {
+		id = rand.Text()
 	}
 
 	// Configure the HTTP client and transport

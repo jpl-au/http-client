@@ -3,6 +3,7 @@ package client_test
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
@@ -163,4 +164,24 @@ func TestClientPerRequestOptionKeepsGlobalSettings(t *testing.T) {
 	resp, err = c.Get(server.URL+"/upload/no-preserve", options.New().DisableRedirects())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusFound, resp.StatusCode, "a per-request DisableRedirects should override the global setting")
+}
+
+// TestClientHistoryWithoutTracing checks that turning off the trace header still
+// gives each response its own identifier in the history.
+func TestClientHistoryWithoutTracing(t *testing.T) {
+	var traceHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceHeaders = append(traceHeaders, r.Header.Get("X-Trace-ID"))
+	}))
+	defer server.Close()
+
+	c := client.New(options.New().SetIdentifierType(options.IdentifierNone))
+	for range 3 {
+		resp, err := c.Get(server.URL)
+		require.NoError(t, err)
+		assert.NotEmpty(t, resp.UniqueIdentifier)
+	}
+
+	assert.Equal(t, 3, c.ResponseCount(), "each response should have its own history entry")
+	assert.Equal(t, []string{"", "", ""}, traceHeaders, "no trace header should be sent")
 }
