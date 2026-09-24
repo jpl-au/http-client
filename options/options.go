@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ua defines the default User-Agent string for requests
@@ -125,7 +124,6 @@ func (opt *Option) Client() *http.Client {
 		if opt.client == nil {
 			opt.client = &http.Client{
 				Transport: cloneTransport(),
-				Timeout:   30 * time.Second,
 			}
 		}
 		client = opt.client
@@ -173,6 +171,7 @@ func (opt *Option) UseSharedClient() *Option {
 // performance. Use this when you need complete isolation between requests or when you want
 // to customize client behavior for specific requests without affecting other requests.
 // UsePerRequestClient disables shared client and ensures a new client is created
+// The client has no total timeout; use SetContext with a deadline to bound a request.
 func (opt *Option) UsePerRequestClient() *Option {
 	opt.mu.Lock()
 	opt.useSharedClient = false

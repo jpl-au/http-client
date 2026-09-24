@@ -88,3 +88,9 @@ func TestClientTransportOverrideDoesNotPersist(t *testing.T) {
 	_, err = c.Get(server.URL)
 	assert.NoError(t, err, "the header limit should not apply to later requests")
 }
+
+func TestPerRequestClientHasNoTimeout(t *testing.T) {
+	opt := options.New().UsePerRequestClient()
+
+	assert.Zero(t, opt.Client().Timeout, "a total timeout would cut off long downloads; use a context deadline instead")
+}
