@@ -39,8 +39,10 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
+	// One identifier names the request in the trace header and in the response.
+	id := opt.GenerateIdentifier()
 	if opt.Tracing.Type != options.IdentifierNone {
-		opt.AddHeader("X-Trace-ID", opt.GenerateIdentifier())
+		opt.AddHeader("X-Trace-ID", id)
 	}
 
 	// Configure the HTTP client and transport
@@ -54,7 +56,7 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	}
 
 	// Set up base response object
-	resp := response.New(url, method, payload, opt)
+	resp := response.New(id, url, method, payload, opt)
 
 	if err := prepareResume(opt); err != nil {
 		return resp, err

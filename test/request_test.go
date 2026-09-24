@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -225,4 +226,21 @@ func TestFailedUploadReleasesCompressor(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the compressor is still blocked on the pipe after the request failed")
 	}
+}
+
+func TestResponseMetadataMatchesRequest(t *testing.T) {
+	var traceID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceID = r.Header.Get("X-Trace-ID")
+		w.Header().Set("Content-Length", "3")
+		_, _ = w.Write([]byte("abc"))
+	}))
+	defer server.Close()
+
+	resp, err := client.Get(server.URL)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, traceID)
+	assert.Equal(t, traceID, resp.UniqueIdentifier, "the trace header and the response should share one identifier")
+	assert.Equal(t, int64(3), resp.ContentLength)
 }

@@ -34,12 +34,12 @@ type Response struct {
 	Options          *options.Option           // Configuration options for the request
 	RequestTime      int64                     // Timestamp of when the request was initiated
 	ResponseTime     int64                     // Timestamp of when the response was received
-	ProcessedTime    int64                     // Duration taken to process the request
+	ProcessedTime    int64                     // Timestamp of when response processing finished
 	Status           string                    // HTTP status message (e.g., "200 OK")
 	StatusCode       int                       // HTTP status code (e.g., 200, 404)
 	Proto            string                    // Protocol used (e.g., HTTP/1.1)
 	Header           http.Header               // Headers included in the response
-	ContentLength    int64                     // Length of the response content
+	ContentLength    int64                     // Content-Length of the response as received, or -1 if unknown (net/http reports -1 when it decompresses a body itself)
 	TransferEncoding []string                  // Transfer encoding details from the response
 	CompressionType  options.CompressionType   // Type of compression applied to the response
 	Uncompressed     bool                      // Indicates if the response was uncompressed
@@ -67,15 +67,16 @@ type Response struct {
 	IsPartialContent bool          // True if response is 206 Partial Content
 }
 
-// New initializes a new Response instance with basic details
-func New(url string, method string, payload any, opt *options.Option) Response {
+// New initializes a new Response instance with basic details.
+// id is the identifier of the request, as sent in its trace header.
+func New(id string, url string, method string, payload any, opt *options.Option) Response {
 	return Response{
-		UniqueIdentifier: opt.GenerateIdentifier(), // Generate unique request identifier
-		URL:              url,                      // Request URL
-		Method:           method,                   // HTTP method
-		RequestPayload:   payload,                  // Request payload
-		Options:          opt,                      // Request options
-		CompressionType:  opt.Compression.Type,     // Compression type from options
+		UniqueIdentifier: id,                   // Request identifier
+		URL:              url,                  // Request URL
+		Method:           method,               // HTTP method
+		RequestPayload:   payload,              // Request payload
+		Options:          opt,                  // Request options
+		CompressionType:  opt.Compression.Type, // Compression type from options
 	}
 }
 
@@ -120,6 +121,7 @@ func (r *Response) PopulateResponse(resp *http.Response, start time.Time) {
 	r.StatusCode = resp.StatusCode             // Set HTTP status code
 	r.Proto = resp.Proto                       // Set protocol used
 	r.Header = resp.Header                     // Copy response headers
+	r.ContentLength = resp.ContentLength       // Copy content length
 	r.TransferEncoding = resp.TransferEncoding // Copy transfer encoding
 	r.Cookies = resp.Cookies()                 // Copy response cookies
 	r.AccessTime = time.Since(start)           // Calculate and set access time
