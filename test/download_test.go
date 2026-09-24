@@ -1,15 +1,19 @@
 package client_test
 
 import (
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileDownload(t *testing.T) {
@@ -93,6 +97,59 @@ func TestBufferSizes(t *testing.T) {
 			assert.Equal(t, tt.expectedSize, resp.Len())
 
 			t.Logf("Download with %d buffer took %v", tt.bufferSize, duration)
+		})
+	}
+}
+
+// writeFile creates path with content and fails the test on error.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readFile returns the content of path and fails the test on error.
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestBodylessResponsesLeaveFileOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		code, _ := strconv.Atoi(r.URL.Query().Get("status"))
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(code)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name   string
+		method string
+		status int
+	}{
+		{"HEAD 200", http.MethodHead, http.StatusOK},
+		{"GET 204", http.MethodGet, http.StatusNoContent},
+		{"GET 304", http.MethodGet, http.StatusNotModified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "existing.bin")
+			writeFile(t, path, "existing")
+
+			url := fmt.Sprintf("%s?status=%d", server.URL, tt.status)
+			resp, err := client.Custom(tt.method, url, nil, options.New().SetFileOutput(path))
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.status, resp.StatusCode, "metadata should be kept")
+			assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"), "metadata should be kept")
+			assert.Equal(t, "existing", readFile(t, path), "a response without a body must not change the file")
 		})
 	}
 }

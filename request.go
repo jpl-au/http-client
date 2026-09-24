@@ -400,6 +400,14 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time) (response.Response, error) {
 	defer r.Body.Close()
 
+	// A response without a body leaves the output alone, so a file destination
+	// keeps its content, and has nothing to decompress.
+	if !hasBody(r) {
+		resp.ProcessedTime = time.Now().Unix()
+		resp.PopulateResponse(r, startTime)
+		return resp, nil
+	}
+
 	encoding := r.Header.Get("Content-Encoding")
 
 	decompressedBody, err := opt.NewDecompressor(r.Body, encoding)
@@ -446,4 +454,20 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	resp.PopulateResponse(r, startTime)
 
 	return resp, nil
+}
+
+// hasBody reports whether r can carry a body. A response to HEAD, and a 1xx,
+// 204, 205 or 304 response, has none (RFC 9110).
+func hasBody(r *http.Response) bool {
+	switch {
+	case r.Request.Method == http.MethodHead:
+		return false
+	case r.StatusCode < http.StatusOK:
+		return false
+	case r.StatusCode == http.StatusNoContent,
+		r.StatusCode == http.StatusResetContent,
+		r.StatusCode == http.StatusNotModified:
+		return false
+	}
+	return true
 }
