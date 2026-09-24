@@ -52,6 +52,7 @@ func defaultCompressionConfig() CompressionConfig {
 func (opt *Option) SetCompression(compressionType CompressionType) *Option {
 	opt.mu.Lock()
 	opt.Compression.Type = compressionType
+	opt.explicit |= settingCompression
 	opt.mu.Unlock()
 	return opt
 }

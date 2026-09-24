@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"strings"
@@ -56,6 +55,32 @@ type Option struct {
 	ResponseWriter  ResponseWriter    // Define the type of response writer
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
+	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
+}
+
+// settings identifies Option settings whose zero value is a real choice,
+// such as DisableRedirects. Setters record the settings they choose, so that
+// Merge can tell a chosen zero value from a value that was never set.
+type settings uint16
+
+const (
+	settingFollow settings = 1 << iota
+	settingPreserveMethod
+	settingMaxRedirects
+	settingLogging
+	settingLogger
+	settingTracking
+	settingCompression
+	settingTracing
+	settingProtocol
+	settingMaxHeaderBytes
+	settingRange
+	settingOutput
+)
+
+// has reports whether s includes setting.
+func (s settings) has(setting settings) bool {
+	return s&setting != 0
 }
 
 // New creates a default Option with pre-configured settings. If additional options are provided
@@ -311,8 +336,11 @@ func (opt *Option) SetContext(ctx context.Context) *Option {
 }
 
 // Merge combines the settings from another Option instance into this one.
-// Settings from the source Option take precedence over existing settings.
-// This includes headers, cookies, compression settings, and all other configuration options.
+// Merge copies each setting that the source holds with a value other than its
+// default, and each setting that a setter chose on the source, even when the
+// chosen value is the default. Settings the source left at their defaults do not
+// change this Option. To turn a setting off through Merge, use its setter, such
+// as DisableRedirects.
 func (opt *Option) Merge(src *Option) *Option {
 	if src == nil || src == opt {
 		return opt
@@ -343,17 +371,20 @@ func (opt *Option) Merge(src *Option) *Option {
 		}
 	}
 
-	// Merge boolean and primitive fields only if source was properly initialized
-	if src.initialised {
+	if src.Logging.Enabled || src.explicit.has(settingLogging) {
 		opt.Logging.Enabled = src.Logging.Enabled
+	}
+	if src.Redirect.Follow || src.explicit.has(settingFollow) {
 		opt.Redirect.Follow = src.Redirect.Follow
+	}
+	if src.Redirect.PreserveMethod || src.explicit.has(settingPreserveMethod) {
 		opt.Redirect.PreserveMethod = src.Redirect.PreserveMethod
 	}
-	if src.Redirect.Max != 0 {
+	if (src.Redirect.Max != 0 && src.Redirect.Max != defaultRedirectConfig().Max) || src.explicit.has(settingMaxRedirects) {
 		opt.Redirect.Max = src.Redirect.Max
 	}
 
-	if src.Logging.Logger != (slog.Logger{}) {
+	if src.explicit.has(settingLogger) {
 		opt.Logging.Logger = src.Logging.Logger
 	}
 
@@ -361,10 +392,10 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Transport.HTTP != nil {
 		opt.Transport.HTTP = src.Transport.HTTP
 	}
-	if src.Transport.MaxResponseHeaderBytes != 0 {
+	if src.Transport.MaxResponseHeaderBytes != 0 || src.explicit.has(settingMaxHeaderBytes) {
 		opt.Transport.MaxResponseHeaderBytes = src.Transport.MaxResponseHeaderBytes
 	}
-	if src.Transport.Protocol != Both {
+	if src.Transport.Protocol != Both || src.explicit.has(settingProtocol) {
 		opt.Transport.Protocol = src.Transport.Protocol
 	}
 	if src.Transport.Scheme != "" {
@@ -375,12 +406,12 @@ func (opt *Option) Merge(src *Option) *Option {
 		opt.Context = src.Context
 	}
 
-	if src.ResponseWriter.Type != "" {
+	if (src.ResponseWriter.Type != "" && src.ResponseWriter.Type != WriteToBuffer) || src.explicit.has(settingOutput) {
 		opt.ResponseWriter = src.ResponseWriter
 	}
 
 	// Merge compression config
-	if src.Compression.Type != "" {
+	if src.Compression.Type != CompressionNone || src.explicit.has(settingCompression) {
 		opt.Compression.Type = src.Compression.Type
 	}
 	if src.Compression.CustomType != "" {
@@ -393,12 +424,12 @@ func (opt *Option) Merge(src *Option) *Option {
 		opt.Compression.Decompressor = src.Compression.Decompressor
 	}
 
-	if src.UserAgent != "" {
+	if src.UserAgent != "" && src.UserAgent != ua {
 		opt.UserAgent = src.UserAgent
 	}
 
 	// Merge tracing config
-	if src.Tracing.Type != "" {
+	if (src.Tracing.Type != IdentifierNone && src.Tracing.Type != IdentifierULID) || src.explicit.has(settingTracing) {
 		opt.Tracing.Type = src.Tracing.Type
 	}
 
@@ -421,14 +452,16 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Progress.OnDownload != nil {
 		opt.Progress.OnDownload = src.Progress.OnDownload
 	}
-	if src.initialised {
+	if src.Progress.Tracking != TrackBeforeCompression || src.explicit.has(settingTracking) {
 		opt.Progress.Tracking = src.Progress.Tracking
 	}
 
 	// Merge range config
-	if src.Range.IsSet {
+	if src.Range.IsSet || src.explicit.has(settingRange) {
 		opt.Range = src.Range
 	}
+
+	opt.explicit |= src.explicit
 	opt.mu.Unlock()
 	return opt
 }
@@ -450,6 +483,7 @@ func (opt *Option) Clone() *Option {
 
 	opt.mu.RLock()
 	clone.initialised = opt.initialised
+	clone.explicit = opt.explicit
 	// Deep clone the http.Header
 	clone.Header = make(http.Header)
 	for key, values := range opt.Header {

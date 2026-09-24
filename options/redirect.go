@@ -35,6 +35,7 @@ func (opt *Option) Redirects(enabled bool, preserve bool, max int) *Option {
 	opt.Redirect.Follow = enabled
 	opt.Redirect.PreserveMethod = preserve
 	opt.Redirect.Max = max
+	opt.explicit |= settingFollow | settingPreserveMethod | settingMaxRedirects
 	opt.mu.Unlock()
 	return opt
 }
@@ -43,6 +44,7 @@ func (opt *Option) Redirects(enabled bool, preserve bool, max int) *Option {
 func (opt *Option) EnableRedirects() *Option {
 	opt.mu.Lock()
 	opt.Redirect.Follow = true
+	opt.explicit |= settingFollow
 	opt.mu.Unlock()
 	return opt
 }
@@ -51,6 +53,7 @@ func (opt *Option) EnableRedirects() *Option {
 func (opt *Option) DisableRedirects() *Option {
 	opt.mu.Lock()
 	opt.Redirect.Follow = false
+	opt.explicit |= settingFollow
 	opt.mu.Unlock()
 	return opt
 }
@@ -59,6 +62,7 @@ func (opt *Option) DisableRedirects() *Option {
 func (opt *Option) EnablePreserveMethod() *Option {
 	opt.mu.Lock()
 	opt.Redirect.PreserveMethod = true
+	opt.explicit |= settingPreserveMethod
 	opt.mu.Unlock()
 	return opt
 }
@@ -67,6 +71,7 @@ func (opt *Option) EnablePreserveMethod() *Option {
 func (opt *Option) DisablePreserveMethod() *Option {
 	opt.mu.Lock()
 	opt.Redirect.PreserveMethod = false
+	opt.explicit |= settingPreserveMethod
 	opt.mu.Unlock()
 	return opt
 }
@@ -75,6 +80,7 @@ func (opt *Option) DisablePreserveMethod() *Option {
 func (opt *Option) SetMaxRedirects(max int) *Option {
 	opt.mu.Lock()
 	opt.Redirect.Max = max
+	opt.explicit |= settingMaxRedirects
 	opt.mu.Unlock()
 	return opt
 }

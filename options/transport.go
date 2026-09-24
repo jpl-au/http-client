@@ -101,6 +101,7 @@ func (opt *Option) SetTransport(transport *http.Transport) *Option {
 func (opt *Option) SetMaxResponseHeaderBytes(size int64) *Option {
 	opt.mu.Lock()
 	opt.Transport.MaxResponseHeaderBytes = size
+	opt.explicit |= settingMaxHeaderBytes
 	opt.mu.Unlock()
 	return opt
 }
@@ -129,6 +130,7 @@ func (opt *Option) SetMaxResponseHeaderBytes(size int64) *Option {
 func (opt *Option) SetProtocol(p Protocol) *Option {
 	opt.mu.Lock()
 	opt.Transport.Protocol = p
+	opt.explicit |= settingProtocol
 	opt.mu.Unlock()
 	return opt
 }

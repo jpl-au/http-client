@@ -47,6 +47,7 @@ func defaultProgressConfig() ProgressConfig {
 func (opt *Option) TrackBeforeCompression() *Option {
 	opt.mu.Lock()
 	opt.Progress.Tracking = TrackBeforeCompression
+	opt.explicit |= settingTracking
 	opt.mu.Unlock()
 	return opt
 }
@@ -56,6 +57,7 @@ func (opt *Option) TrackBeforeCompression() *Option {
 func (opt *Option) TrackAfterCompression() *Option {
 	opt.mu.Lock()
 	opt.Progress.Tracking = TrackAfterCompression
+	opt.explicit |= settingTracking
 	opt.mu.Unlock()
 	return opt
 }

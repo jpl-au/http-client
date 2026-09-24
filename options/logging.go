@@ -39,6 +39,7 @@ func (opt *Option) Log(msg string, args ...any) {
 func (opt *Option) EnableLogging() *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = true
+	opt.explicit |= settingLogging
 	opt.mu.Unlock()
 	return opt
 }
@@ -47,6 +48,7 @@ func (opt *Option) EnableLogging() *Option {
 func (opt *Option) DisableLogging() *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = false
+	opt.explicit |= settingLogging
 	opt.mu.Unlock()
 	return opt
 }
@@ -56,6 +58,7 @@ func (opt *Option) DisableLogging() *Option {
 func (opt *Option) UseTextLogger() *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = true
+	opt.explicit |= settingLogging | settingLogger
 	opt.Logging.Logger = *slog.New(slog.NewTextHandler(os.Stdout, nil))
 	opt.mu.Unlock()
 	return opt
@@ -66,6 +69,7 @@ func (opt *Option) UseTextLogger() *Option {
 func (opt *Option) UseJsonLogger() *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = true
+	opt.explicit |= settingLogging | settingLogger
 	opt.Logging.Logger = *slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	opt.mu.Unlock()
 	return opt
@@ -76,6 +80,7 @@ func (opt *Option) UseJsonLogger() *Option {
 func (opt *Option) SetLogger(logger *slog.Logger) *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = true
+	opt.explicit |= settingLogging | settingLogger
 	opt.Logging.Logger = *logger
 	opt.mu.Unlock()
 	return opt

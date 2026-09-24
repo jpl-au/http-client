@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/jpl-au/http-client/options"
@@ -27,25 +28,69 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		assert.True(t, dest.Redirect.PreserveMethod, "PreserveMethodOnRedirect should remain true after merge with uninitialised source")
 	})
 
-	t.Run("Initialised source should override booleans", func(t *testing.T) {
-		// Create a properly initialised option with specific boolean values
+	t.Run("Default source should not override booleans", func(t *testing.T) {
 		dest := options.New()
 		dest.Logging.Enabled = true
 		dest.Redirect.Follow = true
 		dest.Redirect.PreserveMethod = true
+		dest.TrackAfterCompression()
+		dest.SetMaxRedirects(3)
+		dest.SetIdentifierType(options.IdentifierUUID)
+		dest.UserAgent = "custom-agent"
+		dest.SetLogger(slog.New(slog.DiscardHandler))
+		dest.SetFileOutput("download.bin")
 
-		// Create an initialised option with false values
-		src := options.New()
-		src.Logging.Enabled = false
-		src.Redirect.Follow = false
-		src.Redirect.PreserveMethod = false
+		// A default source carries no choices, so it must not reset dest
+		dest.Merge(options.New())
 
-		// Merge - initialised source SHOULD override dest booleans
+		assert.True(t, dest.Logging.Enabled, "Logging.Enabled should remain true after merge with a default source")
+		assert.True(t, dest.Redirect.Follow, "FollowRedirects should remain true after merge with a default source")
+		assert.True(t, dest.Redirect.PreserveMethod, "PreserveMethodOnRedirect should remain true after merge with a default source")
+		assert.Equal(t, options.TrackAfterCompression, dest.ProgressTracking(), "Tracking should remain after merge with a default source")
+		assert.Equal(t, 3, dest.MaxRedirects(), "MaxRedirects should remain after merge with a default source")
+		assert.Equal(t, options.IdentifierUUID, dest.IdentifierType(), "IdentifierType should remain after merge with a default source")
+		assert.Equal(t, "custom-agent", dest.UserAgent, "UserAgent should remain after merge with a default source")
+		assert.Equal(t, slog.DiscardHandler, dest.Logging.Logger.Handler(), "Logger should remain after merge with a default source")
+		assert.Equal(t, options.WriteToFile, dest.ResponseWriter.Type, "file output should remain after merge with a default source")
+	})
+
+	t.Run("Setters that choose a zero value should override", func(t *testing.T) {
+		dest := options.New().
+			EnableLogging().
+			EnableRedirects().
+			EnablePreserveMethod().
+			TrackAfterCompression().
+			SetCompression(options.CompressionGzip).
+			SetIdentifierType(options.IdentifierUUID).
+			SetProtocol(options.HTTP1).
+			SetMaxResponseHeaderBytes(1024).
+			SetRange(0, 99).
+			SetFileOutput("download.bin")
+
+		src := options.New().
+			DisableLogging().
+			DisableRedirects().
+			DisablePreserveMethod().
+			TrackBeforeCompression().
+			SetCompression(options.CompressionNone).
+			SetIdentifierType(options.IdentifierNone).
+			SetProtocol(options.Both).
+			SetMaxResponseHeaderBytes(0).
+			ClearRange().
+			SetBufferOutput()
+
 		dest.Merge(src)
 
-		assert.False(t, dest.Logging.Enabled, "Logging.Enabled should be false after merge with initialised source")
-		assert.False(t, dest.Redirect.Follow, "FollowRedirects should be false after merge with initialised source")
-		assert.False(t, dest.Redirect.PreserveMethod, "PreserveMethodOnRedirect should be false after merge with initialised source")
+		assert.False(t, dest.Logging.Enabled)
+		assert.False(t, dest.Redirect.Follow)
+		assert.False(t, dest.Redirect.PreserveMethod)
+		assert.Equal(t, options.TrackBeforeCompression, dest.ProgressTracking())
+		assert.Equal(t, options.CompressionNone, dest.Compression.Type)
+		assert.Equal(t, options.IdentifierNone, dest.IdentifierType())
+		assert.Equal(t, options.Both, dest.Transport.Protocol)
+		assert.Zero(t, dest.Transport.MaxResponseHeaderBytes)
+		assert.False(t, dest.HasRange())
+		assert.Equal(t, options.WriteToBuffer, dest.ResponseWriter.Type)
 	})
 
 	t.Run("MaxRedirects zero should not override", func(t *testing.T) {

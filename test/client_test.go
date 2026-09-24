@@ -143,3 +143,24 @@ func TestClientFileMethodsNonExistent(t *testing.T) {
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, options.ErrFileNotFound), "expected ErrFileNotFound, got: %v", err)
 }
+
+// TestClientPerRequestOptionKeepsGlobalSettings checks that a per-request Option
+// that does not mention redirects leaves the Client's redirect setting in place.
+func TestClientPerRequestOptionKeepsGlobalSettings(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	c := client.New(options.New().EnableRedirects())
+
+	resp, err := c.Get(server.URL+"/upload/no-preserve", options.New().AddHeader("X-Request", "1"))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the global EnableRedirects should still apply")
+
+	resp, err = c.PostFormData(server.URL+"/upload/no-preserve", map[string]string{"k": "v"})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the global EnableRedirects should apply to form posts")
+
+	resp, err = c.Get(server.URL+"/upload/no-preserve", options.New().DisableRedirects())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusFound, resp.StatusCode, "a per-request DisableRedirects should override the global setting")
+}

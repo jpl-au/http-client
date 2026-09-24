@@ -142,6 +142,7 @@ func (opt *Option) Resume(filepath string) *Option {
 func (opt *Option) ClearRange() *Option {
 	opt.mu.Lock()
 	opt.Range = RangeConfig{}
+	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt
 }

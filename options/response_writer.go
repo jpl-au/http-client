@@ -106,6 +106,7 @@ func (opt *Option) SetOutput(writerType ResponseWriterType, filepath ...string) 
 		opt.mu.Lock()
 		opt.ResponseWriter.Type = writerType
 		opt.ResponseWriter.FilePath = filepath[0]
+		opt.explicit |= settingOutput
 		opt.mu.Unlock()
 	case WriteToBuffer:
 		if len(filepath) > 0 {
@@ -114,6 +115,7 @@ func (opt *Option) SetOutput(writerType ResponseWriterType, filepath ...string) 
 		opt.mu.Lock()
 		opt.ResponseWriter.Type = writerType
 		opt.ResponseWriter.FilePath = ""
+		opt.explicit |= settingOutput
 		opt.mu.Unlock()
 	default:
 		return ErrInvalidWriterType
@@ -129,6 +131,7 @@ func (opt *Option) SetFileOutput(filepath string) *Option {
 		Type:     WriteToFile,
 		FilePath: filepath,
 	}
+	opt.explicit |= settingOutput
 	opt.mu.Unlock()
 	return opt
 }
@@ -139,6 +142,7 @@ func (opt *Option) SetBufferOutput() *Option {
 	opt.ResponseWriter = ResponseWriter{
 		Type: WriteToBuffer,
 	}
+	opt.explicit |= settingOutput
 	opt.mu.Unlock()
 	return opt
 }

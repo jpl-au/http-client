@@ -48,6 +48,7 @@ func defaultTracingConfig() TracingConfig {
 func (opt *Option) SetIdentifierType(t UniqueIdentifierType) *Option {
 	opt.mu.Lock()
 	opt.Tracing.Type = t
+	opt.explicit |= settingTracing
 	opt.mu.Unlock()
 	return opt
 }
