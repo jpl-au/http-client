@@ -8,7 +8,7 @@ A Go HTTP client library with support for compression, progress tracking, and co
 - Compression (gzip, deflate, brotli, custom)
 - Upload and download progress tracking
 - File uploads with automatic content-type detection
-- Redirect handling with method preservation
+- Redirect handling that follows net/http rules
 - Range requests for partial downloads and resumable transfers
 - Request tracing with UUID/ULID identifiers
 - Protocol selection (HTTP/1, HTTP/2)
@@ -111,27 +111,32 @@ opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
 ## Progress Tracking
 
 ```go
-opt := options.New()
-opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-    pct := float64(bytesRead) / float64(totalBytes) * 100
-    fmt.Printf("\rUploading: %.1f%%", pct)
-}
-opt.Progress.OnDownload = func(bytesRead, totalBytes int64) {
-    pct := float64(bytesRead) / float64(totalBytes) * 100
-    fmt.Printf("\rDownloading: %.1f%%", pct)
-}
+opt := options.New().
+    OnUploadProgress(func(bytesRead, totalBytes int64) {
+        pct := float64(bytesRead) / float64(totalBytes) * 100
+        fmt.Printf("\rUploading: %.1f%%", pct)
+    }).
+    OnDownloadProgress(func(bytesRead, totalBytes int64) {
+        pct := float64(bytesRead) / float64(totalBytes) * 100
+        fmt.Printf("\rDownloading: %.1f%%", pct)
+    })
 
 resp, err := client.PostFile(url, "large-file.zip", opt)
 ```
 
+The total is -1 when the size is unknown, for example for a compressed or chunked response.
+
 ## Redirect Handling
 
+Redirects are not followed by default:
+
 ```go
-opt := options.New()
-opt.Redirect.Follow = true          // follow redirects (default: false)
-opt.Redirect.PreserveMethod = true  // preserve POST/PUT method on redirect
-opt.Redirect.Max = 10               // maximum redirects (default: 10)
+opt := options.New().
+    EnableRedirects().   // follow redirects (default: off)
+    SetMaxRedirects(5)   // maximum redirects (default: 10)
 ```
+
+Redirects follow net/http rules. A 307 or 308 repeats the method and body, and a 301, 302 or 303 changes a POST to a GET without a body. Credentials and cookies are not sent to another host. A 307 or 308 with a payload that can only be read once, such as a plain `io.Reader`, returns `client.ErrPayloadNotReplayable`; use `[]byte`, a string, a file or a seekable reader to follow it.
 
 ## Range Requests
 
@@ -150,9 +155,28 @@ resp, err := client.Get(url, opt)
 opt := options.New().SetRangeLast(1024)
 resp, err := client.Get(url, opt)
 
-// Resume a partial download
-opt := options.New().Resume("/path/to/partial-file.zip")
-resp, err := client.Get(url, opt)
+```
+
+### Resumable downloads
+
+`Resume` downloads to a file and can continue after an interruption. The data goes to a partial file, `file.zip.part`, and is renamed to `file.zip` only when the download is complete, so `file.zip` never holds a partial download.
+
+Pass the header of the response that started the partial file, or nil on the first attempt. The library sends its strong validator as `If-Range`, so if the resource has changed, the download starts again instead of mixing two versions. Without a strong validator, the download starts again from the beginning.
+
+```go
+var previous http.Header
+for {
+    resp, err := client.Get(url, options.New().Resume("/path/to/file.zip", previous))
+    if err == nil {
+        break // complete: the file is at /path/to/file.zip
+    }
+    if resp.Header != nil {
+        previous = resp.Header // the response that wrote to the partial file
+    }
+    // Retry after an interruption or client.ErrDownloadIncomplete.
+    // client.ErrRangeMismatch means the server sent data that does not
+    // continue the file; the partial file keeps only verified bytes.
+}
 ```
 
 ## Request Tracing
@@ -186,8 +210,10 @@ Download content directly to a file without buffering in memory:
 opt := options.New().SetFileOutput("/path/to/output.txt")
 
 resp, err := client.Get(url, opt)
-// Response body is written directly to the file
+// A successful body is written to the file
 ```
+
+The body is written to a temporary file beside the destination and renamed into place only when it has arrived in full, so a failed download leaves the destination as it was. A replaced file keeps its permissions, and a new file follows the process umask. Only a 2xx response is written to the file. Any other response is returned in the response buffer with no error, so check `resp.StatusCode`.
 
 ---
 
