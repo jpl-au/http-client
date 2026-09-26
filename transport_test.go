@@ -11,8 +11,6 @@ import (
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // newCountingServer returns a test server and the number of TCP connections it has accepted.
@@ -37,10 +35,14 @@ func TestPackageFunctionsReuseConnections(t *testing.T) {
 
 	for range 3 {
 		_, err := client.Get(server.URL)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
 	}
 
-	assert.Equal(t, int32(1), conns.Load(), "sequential package-level requests should share one connection")
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1 (sequential package-level requests should share one connection)", got)
+	}
 }
 
 func TestClientPerRequestOptionsReuseConnections(t *testing.T) {
@@ -49,10 +51,14 @@ func TestClientPerRequestOptionsReuseConnections(t *testing.T) {
 	c := client.New()
 	for range 3 {
 		_, err := c.Get(server.URL, options.New().AddHeader("X-Request", "1"))
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
 	}
 
-	assert.Equal(t, int32(1), conns.Load(), "per-request options should not create a new connection pool")
+	if got := conns.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1 (per-request options should not create a new connection pool)", got)
+	}
 }
 
 func TestClientPerRequestTransport(t *testing.T) {
@@ -70,12 +76,18 @@ func TestClientPerRequestTransport(t *testing.T) {
 
 	c := client.New()
 	_, err := c.Get(server.URL)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
 	_, err = c.Get(server.URL, options.New().SetTransport(transport))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() with SetTransport error = %v", err)
+	}
 
-	assert.Equal(t, int32(1), dials.Load(), "the per-request transport should carry the request")
+	if got := dials.Load(); got != 1 {
+		t.Errorf("per-request transport dials = %d, want 1 (the per-request transport should carry the request)", got)
+	}
 }
 
 func TestClientTransportOverrideDoesNotPersist(t *testing.T) {
@@ -83,16 +95,22 @@ func TestClientTransportOverrideDoesNotPersist(t *testing.T) {
 
 	c := client.New()
 	_, err := c.Get(server.URL, options.New().SetMaxResponseHeaderBytes(512))
-	require.Error(t, err, "the 4 KB response header should exceed the 512 byte limit")
+	if err == nil {
+		t.Fatal("Get() with a 512 byte header limit error = nil, want error for the 4 KB response header")
+	}
 
 	_, err = c.Get(server.URL)
-	assert.NoError(t, err, "the header limit should not apply to later requests")
+	if err != nil {
+		t.Errorf("Get() after the header limit request error = %v, want nil (the header limit should not apply to later requests)", err)
+	}
 }
 
 func TestPerRequestClientHasNoTimeout(t *testing.T) {
 	opt := options.New().UsePerRequestClient()
 
-	assert.Zero(t, opt.Client().Timeout, "a total timeout would cut off long downloads; use a context deadline instead")
+	if got := opt.Client().Timeout; got != 0 {
+		t.Errorf("Client().Timeout = %v, want 0 (a total timeout would cut off long downloads; use a context deadline instead)", got)
+	}
 }
 
 func TestSetProtocolScheme(t *testing.T) {
@@ -110,7 +128,9 @@ func TestSetProtocolScheme(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			opt := options.New().SetProtocolScheme(tt.input)
-			assert.Equal(t, tt.want, opt.Transport.Scheme)
+			if got := opt.Transport.Scheme; got != tt.want {
+				t.Errorf("SetProtocolScheme(%q): Transport.Scheme = %q, want %q", tt.input, got, tt.want)
+			}
 		})
 	}
 }

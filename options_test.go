@@ -6,13 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestOptionsMergeInitialised tests that Merge respects the initialised flag for boolean fields
@@ -29,8 +28,12 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		// Merge - uninitialised source should NOT override dest booleans
 		dest.Merge(src)
 
-		assert.True(t, dest.Logging.Enabled, "Logging.Enabled should remain true after merge with uninitialised source")
-		assert.True(t, dest.Redirect.Follow, "FollowRedirects should remain true after merge with uninitialised source")
+		if !dest.Logging.Enabled {
+			t.Error("Logging.Enabled = false after merge with an uninitialised source, want true")
+		}
+		if !dest.Redirect.Follow {
+			t.Error("Redirect.Follow = false after merge with an uninitialised source, want true")
+		}
 	})
 
 	t.Run("Default source should not override booleans", func(t *testing.T) {
@@ -47,14 +50,30 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		// A default source carries no choices, so it must not reset dest
 		dest.Merge(options.New())
 
-		assert.True(t, dest.Logging.Enabled, "Logging.Enabled should remain true after merge with a default source")
-		assert.True(t, dest.Redirect.Follow, "FollowRedirects should remain true after merge with a default source")
-		assert.Equal(t, options.TrackAfterCompression, dest.ProgressTracking(), "Tracking should remain after merge with a default source")
-		assert.Equal(t, 3, dest.MaxRedirects(), "MaxRedirects should remain after merge with a default source")
-		assert.Equal(t, options.IdentifierUUID, dest.IdentifierType(), "IdentifierType should remain after merge with a default source")
-		assert.Equal(t, "custom-agent", dest.UserAgent, "UserAgent should remain after merge with a default source")
-		assert.Equal(t, slog.DiscardHandler, dest.Logging.Logger.Handler(), "Logger should remain after merge with a default source")
-		assert.Equal(t, options.WriteToFile, dest.ResponseWriter.Type, "file output should remain after merge with a default source")
+		if !dest.Logging.Enabled {
+			t.Error("Logging.Enabled = false after merge with a default source, want true")
+		}
+		if !dest.Redirect.Follow {
+			t.Error("Redirect.Follow = false after merge with a default source, want true")
+		}
+		if got := dest.ProgressTracking(); got != options.TrackAfterCompression {
+			t.Errorf("ProgressTracking() = %d after merge with a default source, want %d", got, options.TrackAfterCompression)
+		}
+		if got := dest.MaxRedirects(); got != 3 {
+			t.Errorf("MaxRedirects() = %d after merge with a default source, want 3", got)
+		}
+		if got := dest.IdentifierType(); got != options.IdentifierUUID {
+			t.Errorf("IdentifierType() = %q after merge with a default source, want %q", got, options.IdentifierUUID)
+		}
+		if dest.UserAgent != "custom-agent" {
+			t.Errorf("UserAgent = %q after merge with a default source, want %q", dest.UserAgent, "custom-agent")
+		}
+		if got := dest.Logging.Logger.Handler(); got != slog.DiscardHandler {
+			t.Errorf("Logger.Handler() = %T after merge with a default source, want slog.DiscardHandler", got)
+		}
+		if dest.ResponseWriter.Type != options.WriteToFile {
+			t.Errorf("ResponseWriter.Type = %q after merge with a default source, want %q", dest.ResponseWriter.Type, options.WriteToFile)
+		}
 	})
 
 	t.Run("Setters that choose a zero value should override", func(t *testing.T) {
@@ -82,15 +101,33 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		dest.Merge(src)
 
-		assert.False(t, dest.Logging.Enabled)
-		assert.False(t, dest.Redirect.Follow)
-		assert.Equal(t, options.TrackBeforeCompression, dest.ProgressTracking())
-		assert.Equal(t, options.CompressionNone, dest.Compression.Type)
-		assert.Equal(t, options.IdentifierNone, dest.IdentifierType())
-		assert.Equal(t, options.Both, dest.Transport.Protocol)
-		assert.Zero(t, dest.Transport.MaxResponseHeaderBytes)
-		assert.False(t, dest.HasRange())
-		assert.Equal(t, options.WriteToBuffer, dest.ResponseWriter.Type)
+		if dest.Logging.Enabled {
+			t.Error("Logging.Enabled = true, want false")
+		}
+		if dest.Redirect.Follow {
+			t.Error("Redirect.Follow = true, want false")
+		}
+		if got := dest.ProgressTracking(); got != options.TrackBeforeCompression {
+			t.Errorf("ProgressTracking() = %d, want %d", got, options.TrackBeforeCompression)
+		}
+		if dest.Compression.Type != options.CompressionNone {
+			t.Errorf("Compression.Type = %q, want %q", dest.Compression.Type, options.CompressionNone)
+		}
+		if got := dest.IdentifierType(); got != options.IdentifierNone {
+			t.Errorf("IdentifierType() = %q, want %q", got, options.IdentifierNone)
+		}
+		if dest.Transport.Protocol != options.Both {
+			t.Errorf("Transport.Protocol = %d, want %d", dest.Transport.Protocol, options.Both)
+		}
+		if dest.Transport.MaxResponseHeaderBytes != 0 {
+			t.Errorf("Transport.MaxResponseHeaderBytes = %d, want 0", dest.Transport.MaxResponseHeaderBytes)
+		}
+		if dest.HasRange() {
+			t.Error("HasRange() = true, want false")
+		}
+		if dest.ResponseWriter.Type != options.WriteToBuffer {
+			t.Errorf("ResponseWriter.Type = %q, want %q", dest.ResponseWriter.Type, options.WriteToBuffer)
+		}
 	})
 
 	t.Run("MaxRedirects zero should not override", func(t *testing.T) {
@@ -101,7 +138,9 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		dest.Merge(src)
 
-		assert.Equal(t, 15, dest.Redirect.Max, "MaxRedirects should remain 15 after merge with zero value")
+		if dest.Redirect.Max != 15 {
+			t.Errorf("Redirect.Max = %d after merge with a zero value, want 15", dest.Redirect.Max)
+		}
 	})
 
 	t.Run("MaxRedirects non-zero should override", func(t *testing.T) {
@@ -113,7 +152,9 @@ func TestOptionsMergeInitialised(t *testing.T) {
 
 		dest.Merge(src)
 
-		assert.Equal(t, 5, dest.Redirect.Max, "MaxRedirects should be 5 after merge")
+		if dest.Redirect.Max != 5 {
+			t.Errorf("Redirect.Max = %d after merge, want 5", dest.Redirect.Max)
+		}
 	})
 }
 
@@ -129,10 +170,14 @@ func TestReusedOptionSendsCookiesOnce(t *testing.T) {
 	opt := options.New().AddCookie(&http.Cookie{Name: "session", Value: "audit"})
 	for range 3 {
 		_, err := client.Get(server.URL, opt)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
 	}
 
-	assert.Equal(t, []string{"session=audit", "session=audit", "session=audit"}, cookies)
+	if want := []string{"session=audit", "session=audit", "session=audit"}; !slices.Equal(cookies, want) {
+		t.Errorf("Cookie headers = %q, want %q", cookies, want)
+	}
 }
 
 // TestPackageFunctionsLeaveOptionUnchanged checks that package-level functions
@@ -144,16 +189,28 @@ func TestPackageFunctionsLeaveOptionUnchanged(t *testing.T) {
 	opt := options.New()
 
 	_, err := client.Get(server.URL+"/echo", opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 	_, err = client.PostFormData(server.URL+"/echo", map[string]string{"k": "v"}, opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("PostFormData() error = %v", err)
+	}
 	_, err = client.PostFile(server.URL+"/upload", smallf, opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("PostFile() error = %v", err)
+	}
 	_, err = client.PostMultipartUpload(server.URL+"/upload/multipart", map[string]any{"k": "v"}, opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("PostMultipartUpload() error = %v", err)
+	}
 
-	assert.Empty(t, opt.Header, "request headers should not be written into the caller's Option")
-	assert.False(t, opt.HasFile(), "PostFile should not prepare a file on the caller's Option")
+	if len(opt.Header) != 0 {
+		t.Errorf("Option.Header = %v, want empty (request headers must not be written into the caller's Option)", opt.Header)
+	}
+	if opt.HasFile() {
+		t.Error("Option.HasFile() = true, want false (PostFile must not prepare a file on the caller's Option)")
+	}
 }
 
 // TestPackageFunctionsUseOptionClient checks that a client set on an Option
@@ -173,15 +230,21 @@ func TestPackageFunctionsUseOptionClient(t *testing.T) {
 	defer transport.CloseIdleConnections()
 
 	_, err := client.Get(server.URL+"/echo", options.New().SetClient(&http.Client{Transport: transport}))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.Equal(t, int32(1), dials.Load())
+	if got := dials.Load(); got != 1 {
+		t.Errorf("dials = %d, want 1", got)
+	}
 }
 
 // TestRedirectsZeroUsesDefaultMax checks that Redirects with a zero maximum
 // falls back to the same limit as a new Option.
 func TestRedirectsZeroUsesDefaultMax(t *testing.T) {
-	assert.Equal(t, options.New().MaxRedirects(), options.New().Redirects(true, 0).MaxRedirects())
+	if got, want := options.New().Redirects(true, 0).MaxRedirects(), options.New().MaxRedirects(); got != want {
+		t.Errorf("Redirects(true, 0).MaxRedirects() = %d, want %d", got, want)
+	}
 }
 
 // TestMergeResetSetters checks that setters that clear a setting override the
@@ -200,11 +263,21 @@ func TestMergeResetSetters(t *testing.T) {
 		dest := base()
 		dest.Merge(options.New())
 
-		assert.NotNil(t, dest.Context)
-		assert.NotNil(t, dest.Progress.OnUpload)
-		assert.NotNil(t, dest.Progress.OnDownload)
-		assert.NotNil(t, dest.Transport.HTTP)
-		assert.Equal(t, "https://", dest.Transport.Scheme)
+		if dest.Context == nil {
+			t.Error("Context = nil, want the context kept")
+		}
+		if dest.Progress.OnUpload == nil {
+			t.Error("Progress.OnUpload = nil, want the callback kept")
+		}
+		if dest.Progress.OnDownload == nil {
+			t.Error("Progress.OnDownload = nil, want the callback kept")
+		}
+		if dest.Transport.HTTP == nil {
+			t.Error("Transport.HTTP = nil, want the transport kept")
+		}
+		if dest.Transport.Scheme != "https://" {
+			t.Errorf("Transport.Scheme = %q, want %q", dest.Transport.Scheme, "https://")
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -216,10 +289,20 @@ func TestMergeResetSetters(t *testing.T) {
 			SetTransport(nil).
 			SetProtocolScheme(""))
 
-		assert.Nil(t, dest.Context)
-		assert.Nil(t, dest.Progress.OnUpload)
-		assert.Nil(t, dest.Progress.OnDownload)
-		assert.Nil(t, dest.Transport.HTTP)
-		assert.Empty(t, dest.Transport.Scheme)
+		if dest.Context != nil {
+			t.Errorf("Context = %v, want nil", dest.Context)
+		}
+		if dest.Progress.OnUpload != nil {
+			t.Error("Progress.OnUpload is set, want nil")
+		}
+		if dest.Progress.OnDownload != nil {
+			t.Error("Progress.OnDownload is set, want nil")
+		}
+		if dest.Transport.HTTP != nil {
+			t.Errorf("Transport.HTTP = %v, want nil", dest.Transport.HTTP)
+		}
+		if dest.Transport.Scheme != "" {
+			t.Errorf("Transport.Scheme = %q, want \"\"", dest.Transport.Scheme)
+		}
 	})
 }

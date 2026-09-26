@@ -1,13 +1,12 @@
 package client_test
 
 import (
+	"math"
 	"net/http"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestProgressTracking(t *testing.T) {
@@ -25,10 +24,18 @@ func TestProgressTracking(t *testing.T) {
 		}
 
 		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, float64(100.00), lastProgress)
-		require.InDelta(t, 100.0, lastProgress, 0.1)
+		if err != nil {
+			t.Fatalf("Post() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if lastProgress != 100 {
+			t.Errorf("last progress = %v, want %v", lastProgress, 100.0)
+		}
+		if math.Abs(100.0-lastProgress) > 0.1 {
+			t.Fatalf("last progress = %v, want %v within %v", lastProgress, 100.0, 0.1)
+		}
 	})
 
 	t.Run("Upload with Redirect", func(t *testing.T) {
@@ -47,10 +54,18 @@ func TestProgressTracking(t *testing.T) {
 		}
 
 		resp, err := client.Post(server.URL+"/upload/redirect", smallfile.Bytes(), opt)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, float64(100.00), lastProgress)
-		require.Greater(t, progressCalls, 0)
+		if err != nil {
+			t.Fatalf("Post() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if lastProgress != 100 {
+			t.Errorf("last progress = %v, want %v", lastProgress, 100.0)
+		}
+		if progressCalls <= 0 {
+			t.Fatalf("progress calls = %d, want > 0", progressCalls)
+		}
 	})
 
 	t.Run("Upload with Compression - Track Before Compression", func(t *testing.T) {
@@ -65,9 +80,15 @@ func TestProgressTracking(t *testing.T) {
 		}
 
 		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, float64(100.00), lastProgress)
+		if err != nil {
+			t.Fatalf("Post() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if lastProgress != 100 {
+			t.Errorf("last progress = %v, want %v", lastProgress, 100.0)
+		}
 	})
 
 	t.Run("Upload with Compression | Track After Compression", func(t *testing.T) {
@@ -81,9 +102,15 @@ func TestProgressTracking(t *testing.T) {
 
 		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
 		t.Logf("Total bytes sent (compressed bytes): %d", lastProgress)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, int64(smallfile.Len()), resp.Len())
+		if err != nil {
+			t.Fatalf("Post() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if want := int64(smallfile.Len()); resp.Len() != want {
+			t.Errorf("Len() = %d, want %d", resp.Len(), want)
+		}
 	})
 
 	t.Run("Download with Progress", func(t *testing.T) {
@@ -97,10 +124,20 @@ func TestProgressTracking(t *testing.T) {
 		}
 
 		resp, err := client.Get(server.URL+"/download", opt)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		require.Equal(t, largeLen, resp.Len())
-		assert.Equal(t, float64(100.00), lastProgress)
-		require.Greater(t, progressCalls, 0)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if resp.Len() != largeLen {
+			t.Fatalf("Len() = %d, want %d", resp.Len(), largeLen)
+		}
+		if lastProgress != 100 {
+			t.Errorf("last progress = %v, want %v", lastProgress, 100.0)
+		}
+		if progressCalls <= 0 {
+			t.Fatalf("progress calls = %d, want > 0", progressCalls)
+		}
 	})
 }

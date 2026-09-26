@@ -324,7 +324,13 @@ resp.Error            // Any error encountered (for batch inspection)
 
 ## Testing
 
-See the [test directory](test/) for comprehensive examples and test cases.
+Run the test suite from the repository root:
+
+```bash
+go test ./...
+```
+
+The `*_test.go` files give further examples of each feature.
 
 ## Licence
 

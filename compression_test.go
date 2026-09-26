@@ -1,17 +1,18 @@
 package client_test
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/lzw"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/golang/snappy"
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
-	"github.com/pierrec/lz4/v4"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestCompression(t *testing.T) {
@@ -37,10 +38,16 @@ func TestCompression(t *testing.T) {
 			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, largefile.Len())
 
 			resp, err := client.Post(server.URL+"/upload", largefile.String(), opt)
-			assert.NoError(t, err)
+			if err != nil {
+				t.Fatalf("Post() error = %v", err)
+			}
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largefile.String(), resp.String())
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := resp.String(); got != largefile.String() {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), largefile.Len())
+			}
 		})
 	}
 }
@@ -54,8 +61,8 @@ func TestCustomCompression(t *testing.T) {
 		compression options.CompressionType
 		encoding    string
 	}{
-		{"Snappy Compression", options.CompressionCustom, "snappy"},
-		{"LZ4 Compression", options.CompressionCustom, "lz4"},
+		{"Flate Compression", options.CompressionCustom, "flate"},
+		{"LZW Compression", options.CompressionCustom, "lzw"},
 	}
 
 	for _, tt := range tests {
@@ -63,14 +70,14 @@ func TestCustomCompression(t *testing.T) {
 
 			opt := options.New()
 			opt.SetCompression(tt.compression)
-			if tt.encoding == "snappy" {
+			if tt.encoding == "flate" {
 				opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
-					return snappy.NewBufferedWriter(w), nil
+					return flate.NewWriter(w, flate.DefaultCompression)
 				}
 			}
-			if tt.encoding == "lz4" {
+			if tt.encoding == "lzw" {
 				opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
-					return lz4.NewWriter(w), nil
+					return lzw.NewWriter(w, lzw.LSB, 8), nil
 				}
 			}
 			opt.Compression.CustomType = options.CompressionType(tt.encoding)
@@ -79,10 +86,16 @@ func TestCustomCompression(t *testing.T) {
 			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, largefile.Len())
 
 			resp, err := client.Post(server.URL+"/upload", largefile.String(), opt)
-			assert.NoError(t, err)
+			if err != nil {
+				t.Fatalf("Post() error = %v", err)
+			}
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largefile.String(), resp.String())
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := resp.String(); got != largefile.String() {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), largefile.Len())
+			}
 		})
 	}
 }
@@ -125,10 +138,18 @@ func TestStandardDecompression(t *testing.T) {
 				t.Fatal("Response body is empty")
 			}
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, tt.expectedSize, int64(resp.Len()))
-			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
-			assert.Equal(t, int64(largefile.Len()), bytesReceived)
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := int64(resp.Len()); got != tt.expectedSize {
+				t.Errorf("Len() = %d, want %d", got, tt.expectedSize)
+			}
+			if got := resp.Body.Bytes(); !bytes.Equal(got, largefile.Bytes()) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), largefile.Len())
+			}
+			if want := int64(largefile.Len()); bytesReceived != want {
+				t.Errorf("bytes received = %d, want %d", bytesReceived, want)
+			}
 
 			t.Logf("[%s] Original size: %d, Compressed transfer",
 				tt.name,
@@ -145,21 +166,21 @@ func TestCustomDecompression(t *testing.T) {
 		compression options.CompressionType
 		encoding    string
 	}{
-		{"Snappy Decompression", options.CompressionCustom, "snappy"},
-		{"LZ4 Decompression", options.CompressionCustom, "lz4"},
+		{"Flate Decompression", options.CompressionCustom, "flate"},
+		{"LZW Decompression", options.CompressionCustom, "lzw"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opt := options.New()
 			opt.SetCompression(tt.compression)
-			if tt.encoding == "snappy" {
+			if tt.encoding == "flate" {
 				opt.Compression.Decompressor = func(r io.Reader) (io.Reader, error) {
-					return snappy.NewReader(r), nil
+					return flate.NewReader(r), nil
 				}
 			}
-			if tt.encoding == "lz4" {
+			if tt.encoding == "lzw" {
 				opt.Compression.Decompressor = func(r io.Reader) (io.Reader, error) {
-					return lz4.NewReader(r), nil
+					return lzw.NewReader(r, lzw.LSB, 8), nil
 				}
 			}
 			opt.Compression.CustomType = options.CompressionType(tt.encoding)
@@ -171,8 +192,12 @@ func TestCustomDecompression(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Request failed: %v", err)
 			}
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := resp.Body.Bytes(); !bytes.Equal(got, largefile.Bytes()) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), largefile.Len())
+			}
 		})
 	}
 }
@@ -193,14 +218,10 @@ func TestStandardDecompressionToFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a temporary file for each test case
-			tmpFile, err := os.CreateTemp("", fmt.Sprintf("decompress-%s-*.txt", tt.compression))
-			assert.NoError(t, err)
-			defer os.Remove(tmpFile.Name()) // Clean up after test
-			tmpFile.Close()                 // Close it so the client can write to it
+			path := filepath.Join(t.TempDir(), "download.txt")
 
 			opt := options.New()
-			opt.SetFileOutput(tmpFile.Name())
+			opt.SetFileOutput(path)
 			opt.EnableLogging()
 
 			var bytesReceived int64
@@ -218,18 +239,30 @@ func TestStandardDecompressionToFile(t *testing.T) {
 			t.Logf("Response info: Status=%d, Compression=%s", resp.StatusCode, tt.compression)
 			t.Logf("Response headers: %v", resp.Header)
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
 
 			// Read the downloaded file and verify its contents
-			downloadedContent, err := os.ReadFile(tmpFile.Name())
-			assert.NoError(t, err)
-			assert.Equal(t, largefile.Bytes(), downloadedContent)
+			downloadedContent, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("ReadFile() error = %v", err)
+			}
+			if !bytes.Equal(downloadedContent, largefile.Bytes()) {
+				t.Errorf("file content does not match: got %d bytes, want %d bytes", len(downloadedContent), largefile.Len())
+			}
 
 			// Verify file size matches expected size
-			info, err := os.Stat(tmpFile.Name())
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedSize, info.Size())
-			assert.Equal(t, int64(largefile.Len()), bytesReceived)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Stat() error = %v", err)
+			}
+			if info.Size() != tt.expectedSize {
+				t.Errorf("file size = %d, want %d", info.Size(), tt.expectedSize)
+			}
+			if want := int64(largefile.Len()); bytesReceived != want {
+				t.Errorf("bytes received = %d, want %d", bytesReceived, want)
+			}
 
 			t.Logf("[%s] Original size: %d, File size: %d",
 				tt.name,

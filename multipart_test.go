@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestMultipartUpload(t *testing.T) {
@@ -64,18 +63,30 @@ func TestMultipartUpload(t *testing.T) {
 				resp, err = client.PatchMultipartUpload(url, payload, opt)
 			}
 
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
-			assert.Equal(t, float64(100), lastProgress)
+			if err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if resp.StatusCode != tt.expectedStatus {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
+			}
+			if lastProgress != 100 {
+				t.Errorf("last progress = %v, want %v", lastProgress, 100.0)
+			}
 
 			// Parse the JSON response
 			var fileInfo map[string]int64
 			err = json.Unmarshal(resp.Body.Bytes(), &fileInfo)
-			assert.NoError(t, err)
+			if err != nil {
+				t.Errorf("json.Unmarshal() error = %v", err)
+			}
 
 			// Check file sizes
-			assert.Equal(t, int64(smallfile.Len()), fileInfo[smallf])
-			assert.Equal(t, int64(largefile.Len()), fileInfo[largef])
+			if got, want := fileInfo[filepath.Base(smallf)], int64(smallfile.Len()); got != want {
+				t.Errorf("size of %q = %d, want %d", smallf, got, want)
+			}
+			if got, want := fileInfo[filepath.Base(largef)], int64(largefile.Len()); got != want {
+				t.Errorf("size of %q = %d, want %d", largef, got, want)
+			}
 		})
 	}
 }
@@ -87,11 +98,21 @@ func TestMultipartUploadRecordsFormErrors(t *testing.T) {
 	defer server.Close()
 
 	file, err := os.Open(smallf)
-	require.NoError(t, err)
-	require.NoError(t, file.Close())
+	if err != nil {
+		t.Fatalf("Open(%q) error = %v", smallf, err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
 	resp, err := client.PostMultipartUpload(server.URL+"/upload/multipart", map[string]any{"file": file})
-	require.Error(t, err, "a closed file cannot be read into the form")
-	assert.Equal(t, err, resp.Error)
-	assert.NotEmpty(t, resp.UniqueIdentifier)
+	if err == nil {
+		t.Fatal("PostMultipartUpload() error = nil, want error: a closed file cannot be read into the form")
+	}
+	if resp.Error != err {
+		t.Errorf("Response.Error = %v, want %v", resp.Error, err)
+	}
+	if resp.UniqueIdentifier == "" {
+		t.Errorf("UniqueIdentifier = %q, want non-empty", resp.UniqueIdentifier)
+	}
 }

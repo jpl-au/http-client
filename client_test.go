@@ -4,13 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestClientFormDataMethods tests the Client struct's FormData methods
@@ -48,11 +49,17 @@ func TestClientFormDataMethods(t *testing.T) {
 				resp, err = c.PatchFormData(server.URL+"/echo-headers", payload)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			if err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
 
 			// Verify the Content-Type header was set correctly (echoed back by server)
-			assert.Equal(t, "application/x-www-form-urlencoded", resp.Header.Get("Echo-Content-Type"))
+			if got, want := resp.Header.Get("Echo-Content-Type"), "application/x-www-form-urlencoded"; got != want {
+				t.Errorf("Header.Get(%q) = %q, want %q", "Echo-Content-Type", got, want)
+			}
 		})
 	}
 }
@@ -71,8 +78,12 @@ func TestClientFormDataWithOptions(t *testing.T) {
 	payload := map[string]string{"key": "value"}
 
 	resp, err := c.PostFormData(server.URL+"/echo", payload, opt)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	if err != nil {
+		t.Fatalf("PostFormData() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 }
 
 // TestClientFileMethods tests the Client struct's file upload methods
@@ -105,8 +116,12 @@ func TestClientFileMethods(t *testing.T) {
 				resp, err = c.PatchFile(server.URL+"/upload", smallf)
 			}
 
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			if err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
 		})
 	}
 }
@@ -120,17 +135,27 @@ func TestClientFileMethodsContentType(t *testing.T) {
 
 	// The PrepareFile method should infer content-type and set Content-Disposition
 	resp, err := c.PostFile(server.URL+"/echo-headers", smallf)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	if err != nil {
+		t.Fatalf("PostFile() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 
 	// Check that Content-Disposition header was set (PrepareFile sets this)
 	contentDisposition := resp.Header.Get("Echo-Content-Disposition")
-	assert.Contains(t, contentDisposition, "form-data")
-	assert.Contains(t, contentDisposition, smallf)
+	if !strings.Contains(contentDisposition, "form-data") {
+		t.Errorf("Content-Disposition = %q, want it to contain %q", contentDisposition, "form-data")
+	}
+	if name := filepath.Base(smallf); !strings.Contains(contentDisposition, name) {
+		t.Errorf("Content-Disposition = %q, want it to contain %q", contentDisposition, name)
+	}
 
 	// Check that Content-Type was inferred
 	contentType := resp.Header.Get("Echo-Content-Type")
-	assert.NotEmpty(t, contentType, "Content-Type should be set by PrepareFile")
+	if contentType == "" {
+		t.Error(`Content-Type = "", want a type set by PrepareFile`)
+	}
 }
 
 // TestClientFileMethodsNonExistent tests error handling for non-existent files
@@ -141,8 +166,12 @@ func TestClientFileMethodsNonExistent(t *testing.T) {
 	c := client.New()
 
 	_, err := c.PostFile(server.URL+"/upload", "nonexistent-file.txt")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, options.ErrFileNotFound), "expected ErrFileNotFound, got: %v", err)
+	if err == nil {
+		t.Error("PostFile() error = nil, want error")
+	}
+	if !errors.Is(err, options.ErrFileNotFound) {
+		t.Errorf("PostFile() error = %v, want %v", err, options.ErrFileNotFound)
+	}
 }
 
 // TestClientPerRequestOptionKeepsGlobalSettings checks that a per-request Option
@@ -154,16 +183,28 @@ func TestClientPerRequestOptionKeepsGlobalSettings(t *testing.T) {
 	c := client.New(options.New().EnableRedirects())
 
 	resp, err := c.Get(server.URL+"/upload/no-preserve", options.New().AddHeader("X-Request", "1"))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "the global EnableRedirects should still apply")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Get() with the global EnableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 
 	resp, err = c.PostFormData(server.URL+"/upload/no-preserve", map[string]string{"k": "v"})
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "the global EnableRedirects should apply to form posts")
+	if err != nil {
+		t.Fatalf("PostFormData() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("PostFormData() with the global EnableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 
 	resp, err = c.Get(server.URL+"/upload/no-preserve", options.New().DisableRedirects())
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusFound, resp.StatusCode, "a per-request DisableRedirects should override the global setting")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("Get() with a per-request DisableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
 }
 
 // TestClientHistoryWithoutTracing checks that turning off the trace header still
@@ -178,12 +219,20 @@ func TestClientHistoryWithoutTracing(t *testing.T) {
 	c := client.New(options.New().SetIdentifierType(options.IdentifierNone))
 	for range 3 {
 		resp, err := c.Get(server.URL)
-		require.NoError(t, err)
-		assert.NotEmpty(t, resp.UniqueIdentifier)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if resp.UniqueIdentifier == "" {
+			t.Error(`UniqueIdentifier = "", want an identifier`)
+		}
 	}
 
-	assert.Equal(t, 3, c.ResponseCount(), "each response should have its own history entry")
-	assert.Equal(t, []string{"", "", ""}, traceHeaders, "no trace header should be sent")
+	if got, want := c.ResponseCount(), 3; got != want {
+		t.Errorf("ResponseCount() = %d, want %d (one history entry per response)", got, want)
+	}
+	if want := []string{"", "", ""}; !slices.Equal(traceHeaders, want) {
+		t.Errorf("X-Trace-ID headers = %q, want %q (no trace header)", traceHeaders, want)
+	}
 }
 
 // TestClientSetMaxResponsesEnforcesLimit checks that lowering the limit takes
@@ -195,16 +244,26 @@ func TestClientSetMaxResponsesEnforcesLimit(t *testing.T) {
 	c := client.New()
 	for range 3 {
 		_, err := c.Get(server.URL + "/echo")
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
 	}
-	require.Equal(t, 3, c.ResponseCount())
+	if got, want := c.ResponseCount(), 3; got != want {
+		t.Fatalf("ResponseCount() = %d, want %d", got, want)
+	}
 
 	c.SetMaxResponses(1)
 	resp, err := c.Get(server.URL + "/echo")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.Equal(t, 1, c.ResponseCount())
-	assert.NotNil(t, c.Response(resp.UniqueIdentifier), "the newest response should be kept")
+	if got, want := c.ResponseCount(), 1; got != want {
+		t.Errorf("ResponseCount() = %d, want %d", got, want)
+	}
+	if c.Response(resp.UniqueIdentifier) == nil {
+		t.Error("Response(newest identifier) = nil, want the newest response")
+	}
 }
 
 // TestClientFileMethodsRecordPreparationErrors checks that a file that cannot be
@@ -223,12 +282,20 @@ func TestClientFileMethodsRecordPreparationErrors(t *testing.T) {
 	}
 	for _, call := range calls {
 		resp, err := call()
-		require.ErrorIs(t, err, options.ErrFileNotFound)
-		assert.Equal(t, err, resp.Error)
-		assert.NotEmpty(t, resp.UniqueIdentifier)
+		if !errors.Is(err, options.ErrFileNotFound) {
+			t.Fatalf("upload error = %v, want %v", err, options.ErrFileNotFound)
+		}
+		if resp.Error != err {
+			t.Errorf("Response.Error = %v, want %v", resp.Error, err)
+		}
+		if resp.UniqueIdentifier == "" {
+			t.Error(`UniqueIdentifier = "", want an identifier`)
+		}
 	}
 
-	assert.Equal(t, 3, c.ResponseCount(), "each failed Client upload should be in the history")
+	if got, want := c.ResponseCount(), 3; got != want {
+		t.Errorf("ResponseCount() = %d, want %d (one history entry per failed Client upload)", got, want)
+	}
 }
 
 // TestClientHistoryKeepsInvalidURLFailures checks that requests that fail
@@ -237,11 +304,21 @@ func TestClientHistoryKeepsInvalidURLFailures(t *testing.T) {
 	c := client.New()
 
 	first, err := c.Get("http://[::1")
-	require.Error(t, err)
+	if err == nil {
+		t.Fatal("Get() error = nil, want error")
+	}
 	second, err := c.Get("http://[::2")
-	require.Error(t, err)
+	if err == nil {
+		t.Fatal("Get() error = nil, want error")
+	}
 
-	assert.NotEmpty(t, first.UniqueIdentifier)
-	assert.NotEqual(t, first.UniqueIdentifier, second.UniqueIdentifier)
-	assert.Equal(t, 2, c.ResponseCount())
+	if first.UniqueIdentifier == "" {
+		t.Error(`first UniqueIdentifier = "", want an identifier`)
+	}
+	if first.UniqueIdentifier == second.UniqueIdentifier {
+		t.Errorf("second UniqueIdentifier = %q, want a value different from the first", second.UniqueIdentifier)
+	}
+	if got, want := c.ResponseCount(), 2; got != want {
+		t.Errorf("ResponseCount() = %d, want %d", got, want)
+	}
 }

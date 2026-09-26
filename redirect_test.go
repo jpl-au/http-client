@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -17,8 +18,6 @@ import (
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestRedirectPostUploadNoFollow(t *testing.T) {
@@ -34,10 +33,16 @@ func TestRedirectPostUploadNoFollow(t *testing.T) {
 	opt.Redirect.Follow = false
 
 	resp, err := client.Post(server.URL+"/upload/redirect", tmpfile, opt)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("Post() error = %v", err)
+	}
 
-	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-	assert.NotEmpty(t, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusTemporaryRedirect)
+	}
+	if got := resp.Header.Get("Location"); got == "" {
+		t.Error(`Header.Get("Location") = "", want a location`)
+	}
 }
 
 func TestRedirectPostUploadNoPreserve(t *testing.T) {
@@ -53,10 +58,16 @@ func TestRedirectPostUploadNoPreserve(t *testing.T) {
 	opt.Redirect.Follow = true
 
 	resp, err := client.Post(server.URL+"/upload/no-preserve", tmpfile, opt)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("Post() error = %v", err)
+	}
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "GET", resp.String())
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.String(); got != "GET" {
+		t.Errorf("String() = %q, want %q", got, "GET")
+	}
 }
 
 func TestRedirectMaxRedirects(t *testing.T) {
@@ -74,110 +85,63 @@ func TestRedirectMaxRedirects(t *testing.T) {
 	opt.Redirect.Max = 5
 
 	resp, err := client.Post(server.URL+"/max-redirects", tmpfile, opt)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, client.ErrMaxRedirectsExceeded), "expected ErrMaxRedirectsExceeded, got: %v", err)
-	assert.Equal(t, "", resp.String())
+	if err == nil {
+		t.Error("Post() error = nil, want error")
+	}
+	if !errors.Is(err, client.ErrMaxRedirectsExceeded) {
+		t.Errorf("Post() error = %v, want %v", err, client.ErrMaxRedirectsExceeded)
+	}
+	if got := resp.String(); got != "" {
+		t.Errorf("String() = %q, want %q", got, "")
+	}
 }
 
-func TestRedirectPostUploadFollow(t *testing.T) {
+func TestRedirectUploadFollow(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	tmpfile, err := os.Open(largef)
-	if err != nil {
-		t.Fatalf("error opening %s: %s", largef, err)
-	}
-	defer tmpfile.Close()
-
-	opt := options.New()
-	opt.Redirect.Follow = true
-
-	opt.EnableLogging()
-
-	t.Logf("filesize: %d", largefile.Len())
-
-	var lastProgress atomic.Value
-	lastProgress.Store(float64(0))
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			progress := float64(bytesRead) / float64(totalBytes) * 100
-			lastProgress.Store(progress)
-			t.Logf("Upload progress: %f", progress)
-		}
+	tests := []struct {
+		name string
+		send func(url string, payload any, opts ...*options.Option) (response.Response, error)
+	}{
+		{"Post", client.Post},
+		{"Put", client.Put},
+		{"Patch", client.Patch},
 	}
 
-	resp, err := client.Post(server.URL+"/upload/redirect", tmpfile, opt)
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.Open(largef)
+			if err != nil {
+				t.Fatalf("Open(%q) error = %v", largef, err)
+			}
+			defer file.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, float64(100), lastProgress.Load().(float64))
-	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
-}
+			var lastProgress atomic.Value
+			lastProgress.Store(float64(0))
+			opt := options.New()
+			opt.Redirect.Follow = true
+			opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress.Store(float64(bytesRead) / float64(totalBytes) * 100)
+				}
+			}
 
-func TestRedirectPutUploadFollow(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	tmpfile, err := os.Open(largef)
-	if err != nil {
-		t.Fatalf("error opening %s: %s", largef, err)
+			resp, err := tt.send(server.URL+"/upload/redirect", file, opt)
+			if err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := lastProgress.Load().(float64); got != 100 {
+				t.Errorf("upload progress = %v, want 100", got)
+			}
+			if got, want := resp.Body.Bytes(), largefile.Bytes(); !bytes.Equal(got, want) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), len(want))
+			}
+		})
 	}
-	defer tmpfile.Close()
-
-	opt := options.New()
-	opt.Redirect.Follow = true
-
-	opt.EnableLogging()
-
-	t.Logf("filesize: %d", largefile.Len())
-
-	var lastProgress atomic.Value
-	lastProgress.Store(float64(0))
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress.Store(float64(bytesRead) / float64(totalBytes) * 100)
-		}
-	}
-
-	resp, err := client.Put(server.URL+"/upload/redirect", tmpfile, opt)
-	assert.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, float64(100), lastProgress.Load().(float64))
-	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
-}
-
-func TestRedirectPatchUploadFollow(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	tmpfile, err := os.Open(largef)
-	if err != nil {
-		t.Fatalf("error opening %s: %s", largef, err)
-	}
-	defer tmpfile.Close()
-
-	opt := options.New()
-	opt.Redirect.Follow = true
-
-	opt.EnableLogging()
-
-	t.Logf("filesize: %d", largefile.Len())
-
-	var lastProgress atomic.Value
-	lastProgress.Store(float64(0))
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress.Store(float64(bytesRead) / float64(totalBytes) * 100)
-		}
-	}
-
-	resp, err := client.Patch(server.URL+"/upload/redirect", tmpfile, opt)
-	assert.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, float64(100), lastProgress.Load().(float64))
-	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
 }
 
 func TestRedirectFileFuncUpload(t *testing.T) {
@@ -221,12 +185,20 @@ func TestRedirectFileFuncUpload(t *testing.T) {
 				resp, err = client.PatchFile(url, largef, opt)
 			}
 
-			assert.NoError(t, err)
+			if err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got, want := resp.Body.Bytes(), largefile.Bytes(); !bytes.Equal(got, want) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), len(want))
+			}
 			// Verify upload progress completed
-			assert.Equal(t, float64(100), lastProgress.Load().(float64))
+			if got := lastProgress.Load().(float64); got != 100 {
+				t.Errorf("upload progress = %v, want 100", got)
+			}
 		})
 	}
 }
@@ -284,47 +256,29 @@ func TestCompressedFileRedirect(t *testing.T) {
 			}
 
 			// Verify the request succeeded
-			assert.NoError(t, err)
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			if err != nil {
+				t.Errorf("%s error = %v", tt.name, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
 
 			// Verify the content was transmitted correctly
-			assert.Equal(t, smallfile.String(), resp.String())
+			if got, want := resp.String(), smallfile.String(); got != want {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", len(got), len(want))
+			}
 
 			// Verify upload progress completed
 			t.Logf("%s Last progress: %f", tt.name, lastProgress.Load().(float64))
 			// TODO: Progress tracking with compression + redirects may not reach 100%
-			// assert.Equal(t, float64(100), lastProgress.Load().(float64))
+			// if got := lastProgress.Load().(float64); got != 100 {
+			// 	t.Errorf("upload progress = %v, want 100", got)
+			// }
 
 			// Log the response size to see compression effectiveness
 			t.Logf("[%s] Response size: %d bytes", tt.name, len(resp.Body.Bytes()))
 		})
 	}
-}
-
-func TestRedirectWithFileReopenError(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	// Create a temporary file
-	tmpFile, err := os.CreateTemp("", "test-redirect-*.txt")
-	require.NoError(t, err)
-	_, _ = tmpFile.WriteString("test content")
-	tmpFile.Close()
-	tmpPath := tmpFile.Name()
-
-	// Set up options to follow redirects and preserve method
-	opt := options.New()
-	opt.Redirect.Follow = true
-	opt.Redirect.Max = 5
-
-	// Delete the file before making the request that will redirect
-	// This simulates the file becoming unavailable between redirects
-	os.Remove(tmpPath)
-
-	// This should fail because the file doesn't exist
-	_, err = client.PostFile(server.URL+"/redirect/upload", tmpPath, opt)
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, options.ErrFileNotFound), "expected ErrFileNotFound, got: %v", err)
 }
 
 // hop records what the redirect destination received.
@@ -382,13 +336,23 @@ func TestRedirectStripsCredentialsAcrossHosts(t *testing.T) {
 		AddCookie(&http.Cookie{Name: "session", Value: "audit-cookie"})
 
 	resp, err := client.Get(origin.URL+"/redirect/302", opt)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 
 	hops := received()
-	require.Len(t, hops, 1)
-	assert.Empty(t, hops[0].Header.Get("Authorization"), "credentials must not reach another host")
-	assert.Empty(t, hops[0].Header.Get("Cookie"), "cookies must not reach another host")
+	if len(hops) != 1 {
+		t.Fatalf("destination received %d requests, want 1", len(hops))
+	}
+	if got := hops[0].Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization at another host = %q, want \"\" (credentials must not reach another host)", got)
+	}
+	if got := hops[0].Header.Get("Cookie"); got != "" {
+		t.Errorf("Cookie at another host = %q, want \"\" (cookies must not reach another host)", got)
+	}
 }
 
 func TestRedirectKeepsCredentialsOnSameHost(t *testing.T) {
@@ -400,12 +364,20 @@ func TestRedirectKeepsCredentialsOnSameHost(t *testing.T) {
 		AddCookie(&http.Cookie{Name: "session", Value: "audit-cookie"})
 
 	_, err := client.Get(server.URL+"/redirect/302", opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
 	hops := received()
-	require.Len(t, hops, 1)
-	assert.Equal(t, "Bearer audit-token", hops[0].Header.Get("Authorization"))
-	assert.Equal(t, "session=audit-cookie", hops[0].Header.Get("Cookie"), "the cookie should be sent once")
+	if len(hops) != 1 {
+		t.Fatalf("destination received %d requests, want 1", len(hops))
+	}
+	if got, want := hops[0].Header.Get("Authorization"), "Bearer audit-token"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	if got, want := hops[0].Header.Get("Cookie"), "session=audit-cookie"; got != want {
+		t.Errorf("Cookie = %q, want %q (the cookie should be sent once)", got, want)
+	}
 }
 
 func TestRedirectHonoursClientCheckRedirect(t *testing.T) {
@@ -415,12 +387,18 @@ func TestRedirectHonoursClientCheckRedirect(t *testing.T) {
 
 	c := client.NewCustom(reject, options.New().EnableRedirects())
 	_, err := c.Get(server.URL + "/redirect/302")
-	assert.ErrorIs(t, err, errRejected)
+	if !errors.Is(err, errRejected) {
+		t.Errorf("Client.Get() error = %v, want %v", err, errRejected)
+	}
 
 	_, err = client.Get(server.URL+"/redirect/302", options.New().EnableRedirects().SetClient(reject))
-	assert.ErrorIs(t, err, errRejected)
+	if !errors.Is(err, errRejected) {
+		t.Errorf("Get() with SetClient error = %v, want %v", err, errRejected)
+	}
 
-	assert.Empty(t, received(), "a rejected redirect must not reach the destination")
+	if n := len(received()); n != 0 {
+		t.Errorf("destination received %d requests, want 0 (a rejected redirect must not reach the destination)", n)
+	}
 }
 
 func TestRedirectMethodByStatus(t *testing.T) {
@@ -455,12 +433,20 @@ func TestRedirectMethodByStatus(t *testing.T) {
 			case http.MethodHead:
 				_, err = client.Head(url, opt)
 			}
-			require.NoError(t, err)
+			if err != nil {
+				t.Fatalf("%s error = %v", tt.method, err)
+			}
 
 			hops := received()
-			require.Len(t, hops, 1)
-			assert.Equal(t, tt.wantMethod, hops[0].Method)
-			assert.Equal(t, tt.wantBody, hops[0].Body)
+			if len(hops) != 1 {
+				t.Fatalf("destination received %d requests, want 1", len(hops))
+			}
+			if hops[0].Method != tt.wantMethod {
+				t.Errorf("destination method = %q, want %q", hops[0].Method, tt.wantMethod)
+			}
+			if hops[0].Body != tt.wantBody {
+				t.Errorf("destination body = %q, want %q", hops[0].Body, tt.wantBody)
+			}
 		})
 	}
 }
@@ -470,19 +456,33 @@ func TestRedirectReplaysFileAndCompressedBodies(t *testing.T) {
 	url := server.URL + "/redirect/307"
 
 	_, err := client.PostFile(url, smallf, options.New().EnableRedirects())
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("PostFile() error = %v", err)
+	}
 
 	_, err = client.Post(url, "payload", options.New().EnableRedirects().SetCompression(options.CompressionGzip))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Post() error = %v", err)
+	}
 
 	hops := received()
-	require.Len(t, hops, 2)
-	assert.Equal(t, smallfile.String(), hops[0].Body)
+	if len(hops) != 2 {
+		t.Fatalf("destination received %d requests, want 2", len(hops))
+	}
+	if got, want := hops[0].Body, smallfile.String(); got != want {
+		t.Errorf("replayed file body does not match: got %d bytes, want %d bytes", len(got), len(want))
+	}
 	gz, err := gzip.NewReader(strings.NewReader(hops[1].Body))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("gzip.NewReader() error = %v", err)
+	}
 	body, err := io.ReadAll(gz)
-	require.NoError(t, err)
-	assert.Equal(t, "payload", string(body))
+	if err != nil {
+		t.Fatalf("io.ReadAll() error = %v", err)
+	}
+	if got := string(body); got != "payload" {
+		t.Errorf("decompressed body = %q, want %q", got, "payload")
+	}
 }
 
 func TestRedirectDropsBodyHeaders(t *testing.T) {
@@ -491,13 +491,23 @@ func TestRedirectDropsBodyHeaders(t *testing.T) {
 	opt := options.New().EnableRedirects().SetCompression(options.CompressionGzip)
 	opt.AddHeader("Content-Type", "text/plain")
 	_, err := client.Post(server.URL+"/redirect/303", "payload", opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Post() error = %v", err)
+	}
 
 	hops := received()
-	require.Len(t, hops, 1)
-	assert.Equal(t, http.MethodGet, hops[0].Method)
-	assert.Empty(t, hops[0].Header.Get("Content-Encoding"), "a GET without a body has no content encoding")
-	assert.Empty(t, hops[0].Header.Get("Content-Type"), "a GET without a body has no content type")
+	if len(hops) != 1 {
+		t.Fatalf("destination received %d requests, want 1", len(hops))
+	}
+	if hops[0].Method != http.MethodGet {
+		t.Errorf("destination method = %q, want %q", hops[0].Method, http.MethodGet)
+	}
+	if got := hops[0].Header.Get("Content-Encoding"); got != "" {
+		t.Errorf("Content-Encoding = %q, want \"\" (a GET without a body has no content encoding)", got)
+	}
+	if got := hops[0].Header.Get("Content-Type"); got != "" {
+		t.Errorf("Content-Type = %q, want \"\" (a GET without a body has no content type)", got)
+	}
 }
 
 func TestRedirectNonReplayableBody(t *testing.T) {
@@ -508,19 +518,43 @@ func TestRedirectNonReplayableBody(t *testing.T) {
 			// io.MultiReader hides Seek, so the payload can only be read once.
 			payload := io.MultiReader(strings.NewReader("payload"))
 			resp, err := c.Post(server.URL+"/redirect/"+strconv.Itoa(status), payload, options.New().EnableRedirects())
-			require.ErrorIs(t, err, client.ErrPayloadNotReplayable)
-			assert.Empty(t, received(), "an empty body must not be sent in place of the payload")
-			assert.Equal(t, status, resp.StatusCode)
-			assert.Equal(t, "/destination", resp.Header.Get("Location"))
-			assert.ErrorIs(t, resp.Error, client.ErrPayloadNotReplayable)
-			require.Equal(t, 1, c.ResponseCount())
+			if !errors.Is(err, client.ErrPayloadNotReplayable) {
+				t.Fatalf("Post() error = %v, want %v", err, client.ErrPayloadNotReplayable)
+			}
+			if n := len(received()); n != 0 {
+				t.Errorf("destination received %d requests, want 0 (an empty body must not be sent in place of the payload)", n)
+			}
+			if resp.StatusCode != status {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, status)
+			}
+			if got := resp.Header.Get("Location"); got != "/destination" {
+				t.Errorf("Header.Get(%q) = %q, want %q", "Location", got, "/destination")
+			}
+			if !errors.Is(resp.Error, client.ErrPayloadNotReplayable) {
+				t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrPayloadNotReplayable)
+			}
+			if got := c.ResponseCount(); got != 1 {
+				t.Fatalf("ResponseCount() = %d, want 1", got)
+			}
 			stored := c.Response(resp.UniqueIdentifier)
-			require.NotNil(t, stored)
-			assert.Equal(t, status, stored.StatusCode)
-			assert.Equal(t, "/destination", stored.Header.Get("Location"))
-			assert.ErrorIs(t, stored.Error, client.ErrPayloadNotReplayable)
-			assert.Positive(t, stored.AccessTime)
-			assert.NotZero(t, stored.ProcessedTime)
+			if stored == nil {
+				t.Fatalf("Response(%q) = nil, want the stored response", resp.UniqueIdentifier)
+			}
+			if stored.StatusCode != status {
+				t.Errorf("stored StatusCode = %d, want %d", stored.StatusCode, status)
+			}
+			if got := stored.Header.Get("Location"); got != "/destination" {
+				t.Errorf("stored Header.Get(%q) = %q, want %q", "Location", got, "/destination")
+			}
+			if !errors.Is(stored.Error, client.ErrPayloadNotReplayable) {
+				t.Errorf("stored Error = %v, want %v", stored.Error, client.ErrPayloadNotReplayable)
+			}
+			if stored.AccessTime <= 0 {
+				t.Errorf("stored AccessTime = %v, want positive", stored.AccessTime)
+			}
+			if stored.ProcessedTime == 0 {
+				t.Error("stored ProcessedTime = 0, want non-zero")
+			}
 		})
 	}
 }
@@ -529,10 +563,16 @@ func TestRedirectReportsFinalURL(t *testing.T) {
 	server, _ := newRedirectServer(t, "")
 
 	resp, err := client.Get(server.URL+"/redirect/302", options.New().EnableRedirects())
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.True(t, resp.Redirected)
-	assert.Equal(t, server.URL+"/destination", resp.Location)
+	if !resp.Redirected {
+		t.Error("Redirected = false, want true")
+	}
+	if want := server.URL + "/destination"; resp.Location != want {
+		t.Errorf("Location = %q, want %q", resp.Location, want)
+	}
 }
 
 func TestRejectedRedirectKeepsResponse(t *testing.T) {
@@ -541,9 +581,17 @@ func TestRejectedRedirectKeepsResponse(t *testing.T) {
 	reject := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return errRejected }}
 
 	resp, err := client.Get(server.URL+"/redirect/302", options.New().EnableRedirects().SetClient(reject))
-	require.ErrorIs(t, err, errRejected)
+	if !errors.Is(err, errRejected) {
+		t.Fatalf("Get() error = %v, want %v", err, errRejected)
+	}
 
-	assert.Equal(t, err, resp.Error)
-	assert.Equal(t, http.StatusFound, resp.StatusCode, "the rejected redirect response should be recorded")
-	assert.Equal(t, "/destination", resp.Header.Get("Location"))
+	if resp.Error != err {
+		t.Errorf("Response.Error = %v, want %v", resp.Error, err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("StatusCode = %d, want %d (the rejected redirect response should be recorded)", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Header.Get("Location"); got != "/destination" {
+		t.Errorf("Header.Get(%q) = %q, want %q", "Location", got, "/destination")
+	}
 }

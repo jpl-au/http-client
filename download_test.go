@@ -1,31 +1,27 @@
 package client_test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestFileDownload(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	tmpDir, err := os.MkdirTemp("", "download-test")
-	assert.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	downloadPath := filepath.Join(tmpDir, downloadf)
+	downloadPath := filepath.Join(t.TempDir(), "download.txt")
 
 	var lastProgress float64
 	opt := options.New()
@@ -37,39 +33,24 @@ func TestFileDownload(t *testing.T) {
 	opt.SetFileOutput(downloadPath)
 
 	resp, err := client.Get(server.URL+"/download", opt)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	assert.Equal(t, float64(100), lastProgress)
-
-	info, err := os.Stat(downloadPath)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(largefile.Len()), info.Size())
-}
-
-func TestFileDownloadDirectToFile(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	var lastProgress float64
-	opt := options.New()
-	opt.SetFileOutput(downloadf)
-
-	opt.Progress.OnDownload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
-		}
+	if err != nil {
+		t.Errorf("Get() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	resp, err := client.Get(server.URL+"/download", opt)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	if lastProgress != 100 {
+		t.Errorf("last progress = %v, want %v", lastProgress, float64(100))
+	}
 
-	assert.Equal(t, float64(100), lastProgress)
-
-	info, err := os.Stat(downloadf)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(largefile.Len()), info.Size())
+	info, err := os.Stat(downloadPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got, want := info.Size(), int64(largefile.Len()); got != want {
+		t.Errorf("file size = %d, want %d", got, want)
+	}
 }
 
 func TestBufferSizes(t *testing.T) {
@@ -94,8 +75,12 @@ func TestBufferSizes(t *testing.T) {
 			resp, err := client.Get(server.URL+"/download", opt)
 			duration := time.Since(start)
 
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedSize, resp.Len())
+			if err != nil {
+				t.Errorf("Get() error = %v", err)
+			}
+			if got := resp.Len(); got != tt.expectedSize {
+				t.Errorf("Len() = %d, want %d", got, tt.expectedSize)
+			}
 
 			t.Logf("Download with %d buffer took %v", tt.bufferSize, duration)
 		})
@@ -146,11 +131,19 @@ func TestBodylessResponsesLeaveFileOutput(t *testing.T) {
 
 			url := fmt.Sprintf("%s?status=%d", server.URL, tt.status)
 			resp, err := client.Custom(tt.method, url, nil, options.New().SetFileOutput(path))
-			require.NoError(t, err)
+			if err != nil {
+				t.Fatalf("Custom() error = %v", err)
+			}
 
-			assert.Equal(t, tt.status, resp.StatusCode, "metadata should be kept")
-			assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"), "metadata should be kept")
-			assert.Equal(t, "existing", readFile(t, path), "a response without a body must not change the file")
+			if resp.StatusCode != tt.status {
+				t.Errorf("StatusCode = %d, want %d (metadata kept)", resp.StatusCode, tt.status)
+			}
+			if got, want := resp.Header.Get("Content-Encoding"), "gzip"; got != want {
+				t.Errorf("Header.Get(%q) = %q, want %q (metadata kept)", "Content-Encoding", got, want)
+			}
+			if got, want := readFile(t, path), "existing"; got != want {
+				t.Errorf("file content = %q, want %q (a response without a body must not change the file)", got, want)
+			}
 		})
 	}
 }
@@ -180,12 +173,22 @@ func TestFileOutputKeepsDestinationOnErrorStatus(t *testing.T) {
 	writeFile(t, path, "valid")
 
 	resp, err := client.Get(server.URL, options.New().SetFileOutput(path))
-	require.NoError(t, err, "an error status is a response, not a transport failure")
+	if err != nil {
+		t.Fatalf("Get() error = %v, want nil (an error status is a response, not a transport failure)", err)
+	}
 
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	assert.Equal(t, "server error\n", resp.String(), "the error body should be in the response")
-	assert.Equal(t, "valid", readFile(t, path), "an error status must not change the file")
-	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir))
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	if got, want := resp.String(), "server error\n"; got != want {
+		t.Errorf("String() = %q, want %q (the error body in the response)", got, want)
+	}
+	if got, want := readFile(t, path), "valid"; got != want {
+		t.Errorf("file content = %q, want %q (an error status must not change the file)", got, want)
+	}
+	if got, want := dirEntries(t, dir), []string{"download.bin"}; !slices.Equal(got, want) {
+		t.Errorf("directory entries = %q, want %q", got, want)
+	}
 }
 
 func TestFileOutputKeepsDestinationOnTruncatedBody(t *testing.T) {
@@ -205,10 +208,16 @@ func TestFileOutputKeepsDestinationOnTruncatedBody(t *testing.T) {
 	writeFile(t, path, "valid")
 
 	_, err := client.Get(server.URL, options.New().SetFileOutput(path))
-	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("Get() error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
 
-	assert.Equal(t, "valid", readFile(t, path), "a truncated body must not replace the file")
-	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir), "the temporary file should be removed")
+	if got, want := readFile(t, path), "valid"; got != want {
+		t.Errorf("file content = %q, want %q (a truncated body must not replace the file)", got, want)
+	}
+	if got, want := dirEntries(t, dir), []string{"download.bin"}; !slices.Equal(got, want) {
+		t.Errorf("directory entries = %q, want %q (the temporary file removed)", got, want)
+	}
 }
 
 func TestFileOutputReplacesDestinationOnSuccess(t *testing.T) {
@@ -222,10 +231,16 @@ func TestFileOutputReplacesDestinationOnSuccess(t *testing.T) {
 	writeFile(t, path, "old")
 
 	_, err := client.Get(server.URL, options.New().SetFileOutput(path))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.Equal(t, "new content", readFile(t, path))
-	assert.Equal(t, []string{"download.bin"}, dirEntries(t, dir), "the temporary file should be renamed into place")
+	if got, want := readFile(t, path), "new content"; got != want {
+		t.Errorf("file content = %q, want %q", got, want)
+	}
+	if got, want := dirEntries(t, dir), []string{"download.bin"}; !slices.Equal(got, want) {
+		t.Errorf("directory entries = %q, want %q (the temporary file renamed into place)", got, want)
+	}
 }
 
 func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
@@ -238,9 +253,17 @@ func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
 	writePartial(t, path, "abc")
 
 	resp, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	assert.Equal(t, "abc", readFile(t, options.PartialPath(path)), "an error body must not be appended")
-	assert.Equal(t, absent, contentOrAbsent(t, path), "an error body must not be published")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	if got, want := readFile(t, options.PartialPath(path)), "abc"; got != want {
+		t.Errorf("partial file content = %q, want %q (an error body must not be appended)", got, want)
+	}
+	if got := contentOrAbsent(t, path); got != absent {
+		t.Errorf("destination content = %q, want %q (an error body must not be published)", got, absent)
+	}
 }

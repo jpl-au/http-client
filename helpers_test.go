@@ -1,11 +1,13 @@
 package client_test
 
 import (
-	"bufio"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/lzw"
 	"compress/zlib"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,91 +18,44 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/andybalholm/brotli"
-	"github.com/golang/snappy"
-	"github.com/pierrec/lz4/v4"
-	"gopkg.in/yaml.v3"
 )
 
-const (
-	chunkSize = 1024 * 1024 // 1MB chunks for writing
-	smallf    = "test-small.txt"
-	largef    = "test-large.txt"
-	downloadf = "test-download.txt"
+// testPattern is the repeated text of the fixtures. Unlike random data, it compresses well.
+const testPattern = "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. "
 
-	// Repeated text pattern for test files - compresses well unlike random data
-	testPattern = "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. "
-)
-
+// The fixtures are the contents and paths of a 1 MiB and a 10 MiB file of testPattern.
 var (
-	smallfile         *bytes.Buffer
-	largefile         *bytes.Buffer
-	globalTestResults []TestResultSet
+	smallfile *bytes.Buffer
+	largefile *bytes.Buffer
+	smallf    string
+	largef    string
 )
 
-func init() {
-	// create files for testing
-	// it is just easier to clean them up manually after tests
-	// are done vs. re-generating them each time
-	createTestFile(smallf, 1)
-	// load small file in to memory
-	buf, err := os.ReadFile(smallf)
+// TestMain writes the fixtures to a temporary directory and removes it after the tests run.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "http-client-test-")
 	if err != nil {
-		log.Fatal("error loading small.txt: %w", err)
+		log.Fatalf("create fixture directory: %v", err)
 	}
-	smallfile = bytes.NewBuffer(buf)
-
-	createTestFile(largef, 10)
-	// load large file in to memory
-	buf, err = os.ReadFile(largef)
-	if err != nil {
-		log.Fatal("error loading large.txt: %w", err)
-	}
-	largefile = bytes.NewBuffer(buf)
-}
-
-func createTestFile(filename string, size int) {
-	filesize := size * 1024 * 1024
-
-	// Check if the file exists
-	if fileInfo, err := os.Stat(filename); err == nil {
-		// File exists, check its size
-		if fileInfo.Size() == int64(filesize) {
-			log.Printf("File %s already exists and is the correct size (%d bytes).", filename, filesize)
-			return
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("remove fixture directory: %v", err)
 		}
-		log.Printf("File %s exists but is the wrong size (%d bytes). Recreating.", filename, fileInfo.Size())
-	} else if !os.IsNotExist(err) {
-		log.Fatalf("Error checking file %s: %v", filename, err)
-	}
+	}()
 
-	// Create the file
-	file, err := os.Create(filename)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	bytesWritten := 0
-
-	for bytesWritten < filesize {
-		chunk := generateTestData(chunkSize)
-		n, err := writer.WriteString(chunk)
-		if err != nil {
-			log.Fatal(err)
+	smallfile = bytes.NewBufferString(generateTestData(1 << 20))
+	largefile = bytes.NewBufferString(generateTestData(10 << 20))
+	smallf = filepath.Join(dir, "test-small.txt")
+	largef = filepath.Join(dir, "test-large.txt")
+	for path, data := range map[string]*bytes.Buffer{smallf: smallfile, largef: largefile} {
+		if err := os.WriteFile(path, data.Bytes(), 0o644); err != nil {
+			log.Fatalf("write fixture: %v", errors.Join(err, os.RemoveAll(dir)))
 		}
-		bytesWritten += n
 	}
 
-	err = writer.Flush()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("File %s created successfully with size %d bytes.", filename, filesize)
+	m.Run()
 }
 
 func generateTestData(length int) string {
@@ -110,26 +65,6 @@ func generateTestData(length int) string {
 		result[i] = testPattern[i%patternLen]
 	}
 	return string(result)
-}
-
-// TestResultSet represents a complete set of test results with metadata
-type TestResultSet struct {
-	Timestamp   time.Time    `yaml:"timestamp"`
-	TestName    string       `yaml:"test_name"`
-	Environment string       `yaml:"environment"`
-	Results     []TestResult `yaml:"results"`
-}
-
-// TestResult represents a single test scenario result
-type TestResult struct {
-	ScenarioName   string        `yaml:"scenario_name"`
-	NumGoroutines  int           `yaml:"num_goroutines"`
-	RequestsPerGo  int           `yaml:"requests_per_go"`
-	TotalRequests  int           `yaml:"total_requests"`
-	Duration       time.Duration `yaml:"duration"`
-	RequestsPerSec float64       `yaml:"requests_per_sec"`
-	SuccessRate    float64       `yaml:"success_rate"`
-	ErrorCount     int           `yaml:"error_count"`
 }
 
 func setupTestServer(t *testing.T) *httptest.Server {
@@ -170,12 +105,12 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			case "br":
 				t.Log("Using Brotli reader")
 				reader = brotli.NewReader(r.Body)
-			case "snappy":
-				t.Log("Using Snappy reader")
-				reader = snappy.NewReader(r.Body)
-			case "lz4":
-				t.Log("Using LZ4 reader")
-				reader = lz4.NewReader(r.Body)
+			case "flate":
+				t.Log("Using flate reader")
+				reader = flate.NewReader(r.Body)
+			case "lzw":
+				t.Log("Using LZW reader")
+				reader = lzw.NewReader(r.Body, lzw.LSB, 8)
 			default:
 				reader = r.Body
 			}
@@ -354,10 +289,15 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				writer = zlib.NewWriter(w)
 			case "br":
 				writer = brotli.NewWriter(w)
-			case "snappy":
-				writer = snappy.NewBufferedWriter(w)
-			case "lz4":
-				writer = lz4.NewWriter(w)
+			case "flate":
+				var err error
+				writer, err = flate.NewWriter(w, flate.DefaultCompression)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			case "lzw":
+				writer = lzw.NewWriter(w, lzw.LSB, 8)
 			default:
 				http.Error(w, "unsupported compression", http.StatusBadRequest)
 				return
@@ -382,35 +322,4 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, "Hello from path: %s", r.URL.Path)
 		}
 	}))
-}
-
-func writeResultsToFile(resultSet TestResultSet) error {
-	dir := "test_results"
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	filename := filepath.Join(dir, "performance_results.yaml")
-
-	// Open file in append mode
-	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	data, err := yaml.Marshal(resultSet)
-	if err != nil {
-		return err
-	}
-
-	// Write document separator and data
-	if _, err := f.WriteString("---\n"); err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-
-	return f.Sync() // Ensure data is written to disk
 }

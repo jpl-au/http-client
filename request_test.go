@@ -17,8 +17,6 @@ import (
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBasicRequests(t *testing.T) {
@@ -40,8 +38,12 @@ func TestBasicRequests(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, err := client.Custom(tt.method, server.URL+tt.path, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
+			if err != nil {
+				t.Errorf("Custom() error = %v", err)
+			}
+			if resp.StatusCode != tt.expectedStatus {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
+			}
 			if err != nil {
 				t.Logf("err: %s", err)
 			}
@@ -49,70 +51,51 @@ func TestBasicRequests(t *testing.T) {
 	}
 }
 
-func TestPostFileUpload(t *testing.T) {
+func TestPostUpload(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	tmpfile, err := os.Open(smallf)
-	if err != nil {
-		t.Fatalf("error opening %s: %s", smallf, err)
-	}
-	defer tmpfile.Close()
-
-	var lastProgress int64
-	opt := options.New()
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress = (bytesRead * 100) / totalBytes
-		}
-	}
-
-	resp, err := client.Post(server.URL+"/upload", tmpfile, opt)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, int64(100), lastProgress)
-	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
-}
-
-func TestPostStringUpload(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	var lastProgress float64
-	opt := options.New()
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
-		}
+	tests := []struct {
+		name    string
+		payload func(t *testing.T) any
+	}{
+		{"File", func(t *testing.T) any {
+			file, err := os.Open(smallf)
+			if err != nil {
+				t.Fatalf("Open(%q) error = %v", smallf, err)
+			}
+			t.Cleanup(func() { file.Close() })
+			return file
+		}},
+		{"String", func(t *testing.T) any { return smallfile.String() }},
+		{"Bytes", func(t *testing.T) any { return smallfile.Bytes() }},
 	}
 
-	resp, err := client.Post(server.URL+"/upload", smallfile.String(), opt)
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var lastProgress float64
+			opt := options.New()
+			opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				}
+			}
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, float64(100), lastProgress)
-
-	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
-}
-
-func TestPostByteUpload(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	var lastProgress float64
-	opt := options.New()
-	opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
-		}
+			resp, err := client.Post(server.URL+"/upload", tt.payload(t), opt)
+			if err != nil {
+				t.Fatalf("Post() error = %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if lastProgress != 100 {
+				t.Errorf("upload progress = %v, want 100", lastProgress)
+			}
+			if !bytes.Equal(resp.Body.Bytes(), smallfile.Bytes()) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), smallfile.Len())
+			}
+		})
 	}
-
-	resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
-	assert.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, float64(100), lastProgress)
-	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
 }
 
 func TestFileFuncUpload(t *testing.T) {
@@ -155,11 +138,19 @@ func TestFileFuncUpload(t *testing.T) {
 				resp, err = client.PatchFile(url, largef, opt)
 			}
 
-			assert.NoError(t, err)
+			if err != nil {
+				t.Errorf("upload error = %v", err)
+			}
 
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, float64(100), lastProgress)
-			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if lastProgress != 100 {
+				t.Errorf("upload progress = %v, want 100", lastProgress)
+			}
+			if !bytes.Equal(resp.Body.Bytes(), largefile.Bytes()) {
+				t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), largefile.Len())
+			}
 		})
 	}
 }
@@ -172,9 +163,15 @@ func TestCustomHeaders(t *testing.T) {
 	opt.AddHeader("X-Custom-Header", "test-value")
 
 	resp, err := client.Get(server.URL+"/echo-headers", opt)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "test-value", resp.Header.Get("Echo-X-Custom-Header"))
+	if err != nil {
+		t.Errorf("Get() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got, want := resp.Header.Get("Echo-X-Custom-Header"), "test-value"; got != want {
+		t.Errorf("Header.Get(%q) = %q, want %q", "Echo-X-Custom-Header", got, want)
+	}
 }
 
 // roundTripFunc adapts a function to http.RoundTripper.
@@ -223,7 +220,9 @@ func TestFailedUploadReleasesCompressor(t *testing.T) {
 	}
 
 	_, err := client.Post("http://example.invalid/upload", "payload", opt)
-	require.Error(t, err)
+	if err == nil {
+		t.Fatal("Post() error = nil, want error")
+	}
 
 	select {
 	case <-compressor.closed:
@@ -242,11 +241,19 @@ func TestResponseMetadataMatchesRequest(t *testing.T) {
 	defer server.Close()
 
 	resp, err := client.Get(server.URL)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	assert.NotEmpty(t, traceID)
-	assert.Equal(t, traceID, resp.UniqueIdentifier, "the trace header and the response should share one identifier")
-	assert.Equal(t, int64(3), resp.ContentLength)
+	if traceID == "" {
+		t.Error("X-Trace-ID header = \"\", want an identifier")
+	}
+	if resp.UniqueIdentifier != traceID {
+		t.Errorf("UniqueIdentifier = %q, want %q (the X-Trace-ID header)", resp.UniqueIdentifier, traceID)
+	}
+	if resp.ContentLength != 3 {
+		t.Errorf("ContentLength = %d, want 3", resp.ContentLength)
+	}
 }
 
 func TestFailedResponseKeepsStatusAndError(t *testing.T) {
@@ -279,16 +286,26 @@ func TestFailedResponseKeepsStatusAndError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, err := client.Get(tt.url, tt.opt)
-			require.Error(t, err)
-			assert.Equal(t, err, resp.Error, "the response should record the returned error")
-			assert.Equal(t, http.StatusOK, resp.StatusCode, "the response should record the received status")
+			if err == nil {
+				t.Fatal("Get() error = nil, want error")
+			}
+			if resp.Error != err {
+				t.Errorf("Response.Error = %v, want the returned error %v", resp.Error, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d (the received status)", resp.StatusCode, http.StatusOK)
+			}
 		})
 	}
 
 	t.Run("invalid URL", func(t *testing.T) {
 		resp, err := client.Get("http://[::1")
-		require.Error(t, err)
-		assert.Equal(t, err, resp.Error, "the response should record the returned error")
+		if err == nil {
+			t.Fatal("Get() error = nil, want error")
+		}
+		if resp.Error != err {
+			t.Errorf("Response.Error = %v, want the returned error %v", resp.Error, err)
+		}
 	})
 }
 
@@ -304,13 +321,21 @@ func TestLoggingRedactsCredentials(t *testing.T) {
 
 	url := strings.Replace(server.URL, "http://", "http://user:secret-password@", 1) + "/path?token=secret-query"
 	_, err := client.Get(url, opt)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
 	out := logs.String()
-	assert.Contains(t, out, "/path", "the log should still name the request")
-	assert.Contains(t, out, "Authorization", "the log should still list header names")
+	if !strings.Contains(out, "/path") {
+		t.Errorf("log = %q, want it to name the request path %q", out, "/path")
+	}
+	if !strings.Contains(out, "Authorization") {
+		t.Errorf("log = %q, want it to list the header name %q", out, "Authorization")
+	}
 	for _, secret := range []string{"secret-token", "secret-cookie", "secret-password", "secret-query"} {
-		assert.NotContains(t, out, secret)
+		if strings.Contains(out, secret) {
+			t.Errorf("log = %q, want %q redacted", out, secret)
+		}
 	}
 }
 
@@ -322,12 +347,20 @@ func TestUploadEmptyFile(t *testing.T) {
 	defer server.Close()
 
 	path := filepath.Join(t.TempDir(), "empty.txt")
-	require.NoError(t, os.WriteFile(path, nil, 0o644))
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 
 	resp, err := client.PostFile(server.URL, path)
-	require.NoError(t, err, "an empty file is a valid upload")
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Empty(t, received)
+	if err != nil {
+		t.Fatalf("PostFile() error = %v, want nil for an empty file", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(received) != 0 {
+		t.Errorf("received body length = %d, want 0", len(received))
+	}
 }
 
 func TestCustomMethodSendsPayload(t *testing.T) {
@@ -340,9 +373,15 @@ func TestCustomMethodSendsPayload(t *testing.T) {
 
 	for _, m := range []string{"PROPFIND", http.MethodDelete} {
 		_, err := client.Custom(m, server.URL, "payload")
-		require.NoError(t, err)
-		assert.Equal(t, m, method)
-		assert.Equal(t, "payload", body, "the payload of a %s request should be sent", m)
+		if err != nil {
+			t.Fatalf("Custom(%q) error = %v", m, err)
+		}
+		if method != m {
+			t.Errorf("method = %q, want %q", method, m)
+		}
+		if body != "payload" {
+			t.Errorf("%s request body = %q, want %q", m, body, "payload")
+		}
 	}
 }
 
@@ -361,8 +400,14 @@ func TestFailedResponseRecordsTiming(t *testing.T) {
 	defer server.Close()
 
 	resp, err := client.Get(server.URL)
-	require.Error(t, err)
+	if err == nil {
+		t.Fatal("Get() error = nil, want error")
+	}
 
-	assert.GreaterOrEqual(t, resp.AccessTime, stall, "AccessTime should cover the time spent reading the body")
-	assert.NotZero(t, resp.ProcessedTime, "ProcessedTime should be recorded for a failed response")
+	if resp.AccessTime < stall {
+		t.Errorf("AccessTime = %v, want at least %v (the time spent reading the body)", resp.AccessTime, stall)
+	}
+	if resp.ProcessedTime == 0 {
+		t.Error("ProcessedTime = 0, want a timestamp for a failed response")
+	}
 }
