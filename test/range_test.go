@@ -1,6 +1,8 @@
 package client_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -907,10 +909,97 @@ func TestIdentityEncodingIsUnencoded(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "download.bin")
 	writePartial(t, path, "abc")
-	if _, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`))); err != nil {
+	var progress [2]int64
+	opt := options.New().Resume(path, etag(`"v1"`)).OnDownloadProgress(func(current, total int64) {
+		progress = [2]int64{current, total}
+	})
+	if _, err := client.Get(server.URL, opt); err != nil {
 		t.Fatalf("resumed request failed: %v", err)
+	}
+	if progress != [2]int64{6, 6} {
+		t.Errorf("progress = %v, want [6 6]", progress)
 	}
 	if got := contentOrAbsent(t, path); got != "abcdef" {
 		t.Errorf("file = %q, want %q", got, "abcdef")
+	}
+}
+
+// Encoded bytes and decoded file offsets cannot share a resume validator.
+// Reject encoded responses before they can replace or extend accepted data,
+// including when a server ignores the requested identity encoding on restart.
+func TestResumeRejectsEncodedResponsesBeforeWriting(t *testing.T) {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write([]byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	valid := compressed.Bytes()
+	corrupt := bytes.Clone(valid)
+	corrupt[len(corrupt)-8] ^= 0xff // Damage the gzip CRC, leaving decodable data.
+
+	for _, body := range []struct {
+		name string
+		data []byte
+	}{{"valid gzip", valid}, {"invalid checksum", corrupt}} {
+		for _, partial := range []string{absent, "abc"} {
+			t.Run(body.name+"/"+partial, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if got := r.Header.Get("Accept-Encoding"); got != "identity" {
+						t.Errorf("Accept-Encoding = %q, want identity", got)
+					}
+					w.Header().Set("Content-Encoding", "gzip")
+					w.Header().Set("ETag", `"v2"`)
+					// A full response also covers restarting an existing partial file.
+					_, _ = w.Write(body.data)
+				}))
+				defer server.Close()
+				path := filepath.Join(t.TempDir(), "download.bin")
+				if err := os.WriteFile(path, []byte("old destination"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if partial != absent {
+					writePartial(t, path, partial)
+				}
+				resp, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
+				if !errors.Is(err, client.ErrRangeMismatch) {
+					t.Errorf("error = %v, want ErrRangeMismatch", err)
+				}
+				if resp.StatusCode != http.StatusOK || resp.Header.Get("ETag") != `"v2"` {
+					t.Errorf("missing rejected response metadata: status %d, headers %v", resp.StatusCode, resp.Header)
+				}
+				if got := contentOrAbsent(t, path); got != "old destination" {
+					t.Errorf("destination = %q, want old destination", got)
+				}
+				if got := contentOrAbsent(t, options.PartialPath(path)); got != partial {
+					t.Errorf("partial = %q, want %q", got, partial)
+				}
+			})
+		}
+	}
+}
+
+func TestResumeRejectsTransportDecodedResponse(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        etag(`"v1"`),
+			Body:          io.NopCloser(strings.NewReader("decoded bytes")),
+			ContentLength: -1,
+			Uncompressed:  true,
+			Request:       r,
+		}, nil
+	})
+	path := filepath.Join(t.TempDir(), "download.bin")
+	_, err := client.Get("http://example.test/file", options.New().Resume(path, nil).SetClient(&http.Client{Transport: transport}))
+	if !errors.Is(err, client.ErrRangeMismatch) {
+		t.Fatalf("error = %v, want ErrRangeMismatch", err)
+	}
+	for _, name := range []string{path, options.PartialPath(path)} {
+		if got := contentOrAbsent(t, name); got != absent {
+			t.Errorf("%s = %q, want absent", name, got)
+		}
 	}
 }

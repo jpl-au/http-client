@@ -129,6 +129,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		(httpResp.StatusCode == http.StatusTemporaryRedirect || httpResp.StatusCode == http.StatusPermanentRedirect) &&
 		httpResp.Header.Get("Location") != "" &&
 		last.Body != nil && last.Body != http.NoBody && last.GetBody == nil {
+		resp.PopulateResponse(httpResp, start)
 		httpResp.Body.Close()
 		return resp, ErrPayloadNotReplayable
 	}
@@ -513,6 +514,12 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	var resumed *response.ContentRange
 	expected := int64(-1)
 	if opt.Range.IsResume && r.StatusCode < http.StatusMultipleChoices {
+		// Resume offsets describe the saved representation. Decoding an
+		// encoded response would leave a prefix that cannot safely use its
+		// validator or byte offsets, even on the first request or a restart.
+		if r.Uncompressed || (encoding != "" && encoding != "identity") {
+			return resp, fmt.Errorf("%w: resumable download requires an unencoded response", ErrRangeMismatch)
+		}
 		if r.StatusCode == http.StatusPartialContent {
 			cr, err := resumeRange(r, opt.Range)
 			if err != nil {
@@ -559,7 +566,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	var reader io.Reader = decompressedBody
 	if onDownload != nil {
-		if encoding != "" {
+		if encoding != "" && encoding != "identity" {
 			totalSize = -1
 		}
 		reader = options.NewProgressReader(decompressedBody, totalSize, onDownload)

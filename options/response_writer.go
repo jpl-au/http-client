@@ -91,10 +91,27 @@ func (w *PartialWriter) Discard() error {
 
 // Publish closes the partial file and renames it to the destination.
 func (w *PartialWriter) Publish() error {
+	if err := matchDestinationPermissions(w.File, w.path); err != nil {
+		return errors.Join(err, w.File.Close())
+	}
 	if err := w.File.Close(); err != nil {
 		return err
 	}
 	return os.Rename(w.Name(), w.path)
+}
+
+// matchDestinationPermissions applies an existing destination's access mode
+// before appending or publishing. With no destination, keep the partial file's
+// current permissions. In particular, do not widen an imported private file.
+func matchDestinationPermissions(file *os.File, dest string) error {
+	info, err := os.Stat(dest)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return file.Chmod(info.Mode().Perm())
 }
 
 // createFor creates the new file name, which will later replace dest.
@@ -152,7 +169,11 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 			if isContinuation {
 				file, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0)
 				if err == nil {
-					if offset, err = file.Seek(0, io.SeekEnd); err != nil {
+					err = matchDestinationPermissions(file, filePath)
+					if err == nil {
+						offset, err = file.Seek(0, io.SeekEnd)
+					}
+					if err != nil {
 						err = errors.Join(err, file.Close())
 					}
 				}

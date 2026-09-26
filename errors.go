@@ -16,10 +16,10 @@ var (
 	// ErrMissingHost is returned when the URL has no host component.
 	ErrMissingHost = errors.New("missing host")
 
-	// ErrRangeMismatch is returned when a resumed download receives a partial
-	// response that does not continue the partial file: a missing or invalid
-	// Content-Range, another range unit, another start offset, or a body whose
-	// length differs from its range.
+	// ErrRangeMismatch is returned when a resumed download receives an encoded
+	// representation or a partial response that does not continue the partial
+	// file: a missing or invalid Content-Range, another range unit, another
+	// start offset, or a body whose length differs from its range.
 	ErrRangeMismatch = errors.New("response does not match the requested range")
 
 	// ErrDownloadIncomplete is returned when a resumed download receives a valid

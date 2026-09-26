@@ -164,20 +164,23 @@ resp, err := client.Get(url, opt)
 Pass the header of the response that started the partial file, or nil on the first attempt. The library sends its strong validator as `If-Range`, so if the resource has changed, the download starts again instead of mixing two versions. Without a strong validator, the download starts again from the beginning.
 
 ```go
+// Use saved headers only if they belong to the bytes in file.zip.part.
+// Leave previous nil on the first attempt, or to restart from the beginning.
 var previous http.Header
-for {
-    resp, err := client.Get(url, options.New().Resume("/path/to/file.zip", previous))
-    if err == nil {
-        break // complete: the file is at /path/to/file.zip
-    }
-    if resp.Header != nil {
-        previous = resp.Header // the response that wrote to the partial file
-    }
-    // Retry after an interruption or client.ErrDownloadIncomplete.
-    // client.ErrRangeMismatch means the server sent data that does not
-    // continue the file; the partial file keeps only verified bytes.
+resp, err := client.Get(url, options.New().Resume("/path/to/file.zip", previous))
+switch {
+case err != nil:
+    fmt.Printf("The download did not complete: %v\n", err)
+case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent:
+    fmt.Println("The completed download is at /path/to/file.zip.")
+default:
+    fmt.Printf("HTTP %d did not produce a completed download.\n", resp.StatusCode)
 }
 ```
+
+HTTP error statuses do not produce a Go error, so check the status as well. A response without a body, such as 204, leaves the destination unchanged.
+
+For a later attempt, keep headers associated with the retained partial bytes. Do not replace them with headers from a rejected response, including `client.ErrRangeMismatch`, or an HTTP error response. If that association is uncertain, pass nil to restart safely. `client.ErrDownloadIncomplete` means a valid range was retained but the file is not complete. Resume requests require an unencoded response; an encoded response is rejected before any file data changes.
 
 ## Request Tracing
 

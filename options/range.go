@@ -129,7 +129,9 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // from the beginning. See resumeValidator for the rules.
 //
 // If the partial file doesn't exist or is empty, the download starts from the beginning.
-// Resumed downloads ask for the identity encoding.
+// Resumed downloads ask for the identity encoding and reject encoded responses
+// before writing, including on the first attempt and when restarting. Decoded
+// bytes cannot safely be resumed using the encoded representation's offsets.
 //
 // Example usage:
 //

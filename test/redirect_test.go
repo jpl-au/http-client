@@ -501,13 +501,28 @@ func TestRedirectDropsBodyHeaders(t *testing.T) {
 }
 
 func TestRedirectNonReplayableBody(t *testing.T) {
-	server, received := newRedirectServer(t, "")
-
-	// io.MultiReader hides Seek, so the payload can only be read once.
-	payload := io.MultiReader(strings.NewReader("payload"))
-	_, err := client.Post(server.URL+"/redirect/307", payload, options.New().EnableRedirects())
-	assert.ErrorIs(t, err, client.ErrPayloadNotReplayable)
-	assert.Empty(t, received(), "an empty body must not be sent in place of the payload")
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			server, received := newRedirectServer(t, "")
+			c := client.New()
+			// io.MultiReader hides Seek, so the payload can only be read once.
+			payload := io.MultiReader(strings.NewReader("payload"))
+			resp, err := c.Post(server.URL+"/redirect/"+strconv.Itoa(status), payload, options.New().EnableRedirects())
+			require.ErrorIs(t, err, client.ErrPayloadNotReplayable)
+			assert.Empty(t, received(), "an empty body must not be sent in place of the payload")
+			assert.Equal(t, status, resp.StatusCode)
+			assert.Equal(t, "/destination", resp.Header.Get("Location"))
+			assert.ErrorIs(t, resp.Error, client.ErrPayloadNotReplayable)
+			require.Equal(t, 1, c.ResponseCount())
+			stored := c.Response(resp.UniqueIdentifier)
+			require.NotNil(t, stored)
+			assert.Equal(t, status, stored.StatusCode)
+			assert.Equal(t, "/destination", stored.Header.Get("Location"))
+			assert.ErrorIs(t, stored.Error, client.ErrPayloadNotReplayable)
+			assert.Positive(t, stored.AccessTime)
+			assert.NotZero(t, stored.ProcessedTime)
+		})
+	}
 }
 
 func TestRedirectReportsFinalURL(t *testing.T) {
