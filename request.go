@@ -611,18 +611,36 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	// A checksum describes the requested resource, so an error response is
-	// not checked. A resumed download is checked as a whole file, so the
-	// bytes already in the partial file are hashed first.
+	// not checked. A server's checksum covers the bytes it sent, which are
+	// not available when net/http has decompressed the response.
 	if r.StatusCode >= http.StatusMultipleChoices {
 		sum = nil
 	}
-	if sum != nil && resumed != nil {
-		if err := sum.hashPartialFile(opt.ResponseWriter.FilePath, resumed.Start); err != nil {
-			return resp, err
+	var digest *checksum
+	if !opt.SkipDigestCheck && !r.Uncompressed {
+		digest = serverDigest(r, resumed != nil)
+	}
+
+	// A resumed download is checked as a whole file, so the bytes already in
+	// the partial file are hashed first.
+	for _, c := range []*checksum{sum, digest} {
+		if c != nil && resumed != nil {
+			if err := c.hashPartialFile(opt.ResponseWriter.FilePath, resumed.Start); err != nil {
+				return resp, err
+			}
 		}
 	}
 
-	decompressedBody, err := opt.NewDecompressor(r.Body, encoding)
+	// The server's checksum covers the bytes before decompression.
+	sent := r.Body
+	if digest != nil {
+		sent = struct {
+			io.Reader
+			io.Closer
+		}{io.TeeReader(r.Body, digest.hash), r.Body}
+	}
+
+	decompressedBody, err := opt.NewDecompressor(sent, encoding)
 	if err != nil {
 		return resp, fmt.Errorf("failed to create decompressed reader: %w", err)
 	}
@@ -697,8 +715,10 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	// A range with an unknown total is taken to run to the end, as requested.
 	incomplete := resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total
-	if copyErr == nil && sum != nil && !incomplete {
-		copyErr = sum.check()
+	for _, c := range []*checksum{sum, digest} {
+		if copyErr == nil && c != nil && !incomplete {
+			copyErr = c.check()
+		}
 	}
 
 	var closeErr error

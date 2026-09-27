@@ -263,7 +263,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetProtocolScheme("https").
 			SetMaxBodySize(1024).
 			SetStallTimeout(time.Second).
-			SetChecksum(sha256.New, "00")
+			SetChecksum(sha256.New, "00").
+			DisableDigestCheck()
 	}
 
 	t.Run("default source keeps the settings", func(t *testing.T) {
@@ -294,6 +295,9 @@ func TestMergeResetSetters(t *testing.T) {
 		if dest.Checksum.New == nil || dest.Checksum.Expected != "00" {
 			t.Errorf("Checksum = %+v, want sha256.New and %q", dest.Checksum, "00")
 		}
+		if !dest.SkipDigestCheck {
+			t.Error("SkipDigestCheck = false, want true")
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -306,7 +310,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetProtocolScheme("").
 			SetMaxBodySize(0).
 			SetStallTimeout(0).
-			SetChecksum(nil, ""))
+			SetChecksum(nil, "").
+			EnableDigestCheck())
 
 		if dest.Context != nil {
 			t.Errorf("Context = %v, want nil", dest.Context)
@@ -331,6 +336,9 @@ func TestMergeResetSetters(t *testing.T) {
 		}
 		if dest.Checksum.New != nil || dest.Checksum.Expected != "" {
 			t.Errorf("Checksum = %+v, want none", dest.Checksum)
+		}
+		if dest.SkipDigestCheck {
+			t.Error("SkipDigestCheck = true, want false")
 		}
 	})
 }

@@ -187,6 +187,8 @@ func TestOptionMethodsRace(t *testing.T) {
 				opt.SetContext(context.Background())
 				opt.SetStallTimeout(time.Second)
 				opt.SetChecksum(sha256.New, "00")
+				opt.DisableDigestCheck()
+				opt.EnableDigestCheck()
 			}
 		})
 

@@ -301,6 +301,18 @@ if errors.Is(err, client.ErrChecksumMismatch) {
 
 The checksum covers the body as it is saved, after decompression. A file download that does not match leaves the destination as it was, and a download to memory that does not match leaves the response body empty. For a resumed download, the checksum covers the whole file and is checked when the file is complete. If the complete file does not match, its partial file is removed, so the next resume starts again from the beginning. Error responses, such as a 404, are not checked. A checksum that is not valid hex fails the request before it is sent. `SetChecksum(nil, "")` removes a checksum.
 
+### Checksums from the server
+
+Some servers send a checksum with the response, in a `Repr-Digest` or `Content-Digest` header (RFC 9530). The client checks it automatically, and a response that does not match fails with `client.ErrChecksumMismatch`, the same as `SetChecksum`. If you also set a checksum, both are checked.
+
+Only the `sha-256` and `sha-512` algorithms are checked. A header with no known algorithm is ignored. The server's checksum covers the bytes it sent, so a gzip response that Go's HTTP library decompresses itself is not checked. For a resumed download, `Repr-Digest` covers the whole file and is checked when the file is complete. For any other range request, `Content-Digest` covers only the bytes received.
+
+Turn the check off for a server that sends wrong checksums:
+
+```go
+opt := options.New().DisableDigestCheck()
+```
+
 ---
 
 ## Reusable Client

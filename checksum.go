@@ -14,8 +14,9 @@ import (
 
 // checksum is the hash of a downloaded body and the value it must match.
 type checksum struct {
-	hash hash.Hash
-	want []byte
+	hash   hash.Hash
+	want   []byte
+	source string // Where want came from, for a server's checksum. Empty for SetChecksum.
 }
 
 // newChecksum returns the checksum set with SetChecksum, or nil when there is
@@ -39,10 +40,15 @@ func newChecksum(cfg options.ChecksumConfig) (*checksum, error) {
 // check returns an error wrapping ErrChecksumMismatch when the bytes hashed so
 // far do not match.
 func (c *checksum) check() error {
-	if got := c.hash.Sum(nil); !bytes.Equal(got, c.want) {
+	got := c.hash.Sum(nil)
+	switch {
+	case bytes.Equal(got, c.want):
+		return nil
+	case c.source != "":
+		return fmt.Errorf("%w %s: got %x, want %x", ErrChecksumMismatch, c.source, got, c.want)
+	default:
 		return fmt.Errorf("%w: got %x, want %x", ErrChecksumMismatch, got, c.want)
 	}
-	return nil
 }
 
 // hashPartialFile adds the first size bytes of the partial file for dest to

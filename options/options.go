@@ -52,6 +52,7 @@ type Option struct {
 	MaxBodySize     int64             // Maximum size in bytes of a response body held in memory. Zero or less means no limit.
 	StallTimeout    time.Duration     // Longest time a request may go with no data sent or received. Zero or less means no limit.
 	Checksum        ChecksumConfig    // Checksum a downloaded body must match
+	SkipDigestCheck bool              // Do not check the checksum a server sends in a Repr-Digest or Content-Digest header
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
 	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
@@ -82,6 +83,7 @@ const (
 	settingMaxBodySize
 	settingStallTimeout
 	settingChecksum
+	settingDigestCheck
 )
 
 // has reports whether s includes setting.
@@ -445,6 +447,9 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Checksum.New != nil || src.explicit.has(settingChecksum) {
 		opt.Checksum = src.Checksum
 	}
+	if src.SkipDigestCheck || src.explicit.has(settingDigestCheck) {
+		opt.SkipDigestCheck = src.SkipDigestCheck
+	}
 
 	// Merge compression config
 	if src.Compression.Type != CompressionNone || src.explicit.has(settingCompression) {
@@ -566,6 +571,7 @@ func (opt *Option) Clone() *Option {
 	clone.MaxBodySize = opt.MaxBodySize
 	clone.StallTimeout = opt.StallTimeout
 	clone.Checksum = opt.Checksum
+	clone.SkipDigestCheck = opt.SkipDigestCheck
 	clone.File = opt.File
 	clone.Range = opt.Range
 
