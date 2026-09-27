@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	client "github.com/jpl-au/http-client"
+	"github.com/jpl-au/http-client/history"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 )
@@ -514,7 +515,9 @@ func TestRedirectNonReplayableBody(t *testing.T) {
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			server, received := newRedirectServer(t, "")
+			h := history.New()
 			c := client.New()
+			c.SetHistory(h)
 			// io.MultiReader hides Seek, so the payload can only be read once.
 			payload := io.MultiReader(strings.NewReader("payload"))
 			resp, err := c.Post(server.URL+"/redirect/"+strconv.Itoa(status), payload, options.New().EnableRedirects())
@@ -533,12 +536,12 @@ func TestRedirectNonReplayableBody(t *testing.T) {
 			if !errors.Is(resp.Error, client.ErrPayloadNotReplayable) {
 				t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrPayloadNotReplayable)
 			}
-			if got := c.ResponseCount(); got != 1 {
-				t.Fatalf("ResponseCount() = %d, want 1", got)
+			if got := h.Len(); got != 1 {
+				t.Fatalf("Len() = %d, want 1", got)
 			}
-			stored := c.Response(resp.UniqueIdentifier)
-			if stored == nil {
-				t.Fatalf("Response(%q) = nil, want the stored response", resp.UniqueIdentifier)
+			stored, ok := h.Lookup(resp.UniqueIdentifier)
+			if !ok {
+				t.Fatalf("Lookup(%q) found nothing, want the stored response", resp.UniqueIdentifier)
 			}
 			if stored.StatusCode != status {
 				t.Errorf("stored StatusCode = %d, want %d", stored.StatusCode, status)

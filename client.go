@@ -1,77 +1,40 @@
 package client
 
 import (
-	"maps"
 	"net/http"
-	"slices"
 	"sync"
-	"time"
 
+	"github.com/jpl-au/http-client/history"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 )
-
-// Default configuration for response history.
-const (
-	DefaultMaxResponses = 1000            // Maximum number of responses to keep.
-	DefaultResponseTTL  = 5 * time.Minute // How long to keep responses before expiry.
-)
-
-// responseEntry wraps a response with metadata for TTL management.
-// This enables automatic expiry of old responses to prevent unbounded memory growth.
-type responseEntry struct {
-	// response is the stored HTTP response data.
-	response response.Response
-	// createdAt tracks when this entry was added, used for TTL expiry calculations.
-	createdAt time.Time
-}
 
 // Client represents a reusable HTTP client with persistent connection pooling.
 // All requests made through a Client instance share the same underlying http.Client,
 // enabling connection reuse and improved performance for multiple requests to the same hosts.
 type Client struct {
-	mu           sync.RWMutex              // Protects responses map.
-	client       *http.Client              // Persistent HTTP client shared across all requests for connection pooling.
-	responses    map[string]*responseEntry // Response history keyed by UniqueIdentifier.
-	maxResponses int                       // Maximum number of responses to keep.
-	responseTTL  time.Duration             // How long to keep responses before expiry.
-	global       *options.Option           // Global request options applied to all requests.
+	mu      sync.RWMutex     // Protects global and history.
+	client  *http.Client     // Persistent HTTP client shared across all requests for connection pooling.
+	history *history.History // Records every response when set. Nil turns history off.
+	global  *options.Option  // Global request options applied to all requests.
 }
 
 // New returns a reusable Client with a persistent http.Client for connection pooling.
 // Global options can be provided which will be applied to all subsequent requests.
 func New(opts ...*options.Option) *Client {
 	c := &Client{
-		client:       &http.Client{},
-		maxResponses: DefaultMaxResponses,
-		responseTTL:  DefaultResponseTTL,
-		responses:    make(map[string]*responseEntry),
+		client: &http.Client{},
 	}
 	// if no options are passed through, use the defaults
 	c.global = options.New(opts...)
 	return c
 }
 
-// SetMaxResponses sets the maximum number of responses to keep.
-// When the limit is exceeded, expired entries are cleaned up first,
-// then oldest entries are removed if still over the limit.
-func (c *Client) SetMaxResponses(max int) {
-	if max < 1 {
-		max = 1
-	}
+// SetHistory records every response the Client returns in h. A nil History,
+// the default, turns history off.
+func (c *Client) SetHistory(h *history.History) {
 	c.mu.Lock()
-	c.maxResponses = max
-	c.mu.Unlock()
-}
-
-// SetResponseTTL sets how long responses are kept before being eligible for cleanup.
-// Responses older than the TTL are removed during cleanup operations.
-func (c *Client) SetResponseTTL(ttl time.Duration) {
-	if ttl < 0 {
-		ttl = 0
-	}
-	c.mu.Lock()
-	c.responseTTL = ttl
+	c.history = h
 	c.mu.Unlock()
 }
 
@@ -121,83 +84,9 @@ func (c *Client) CloneOptions() *options.Option {
 	return c.GlobalOptions().Clone()
 }
 
-// Clear clears any Responses that have already been made and kept.
-func (c *Client) Clear() {
-	c.mu.Lock()
-	c.responses = make(map[string]*responseEntry)
-	c.mu.Unlock()
-}
-
-// Responses returns a slice of all non-expired responses made by this Client.
-// Responses are returned in no guaranteed order.
-func (c *Client) Responses() []response.Response {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	now := time.Now()
-	responses := make([]response.Response, 0, len(c.responses))
-	for _, entry := range c.responses {
-		if c.responseTTL == 0 || now.Sub(entry.createdAt) <= c.responseTTL {
-			responses = append(responses, entry.response)
-		}
-	}
-	return responses
-}
-
-// Response retrieves a specific response by its UniqueIdentifier.
-// Returns nil if the response is not found or has expired.
-func (c *Client) Response(id string) *response.Response {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	entry, ok := c.responses[id]
-	if !ok {
-		return nil
-	}
-
-	// Check if expired
-	if c.responseTTL > 0 && time.Since(entry.createdAt) > c.responseTTL {
-		return nil
-	}
-
-	return &entry.response
-}
-
-// ResponseCount returns the number of stored responses (including expired ones
-// that haven't been cleaned up yet).
-func (c *Client) ResponseCount() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.responses)
-}
-
-// cleanupResponses removes expired entries, then the oldest entries until
-// there is room for one more below the limit.
-// Must be called with write lock held.
-func (c *Client) cleanupResponses() {
-	now := time.Now()
-	for id, entry := range c.responses {
-		if c.responseTTL > 0 && now.Sub(entry.createdAt) > c.responseTTL {
-			delete(c.responses, id)
-		}
-	}
-
-	// The limit can drop by more than one, so evict as many as needed.
-	excess := len(c.responses) - c.maxResponses + 1
-	if excess <= 0 {
-		return
-	}
-	oldest := slices.SortedFunc(maps.Keys(c.responses), func(a, b string) int {
-		return c.responses[a].createdAt.Compare(c.responses[b].createdAt)
-	})
-	for _, id := range oldest[:excess] {
-		delete(c.responses, id)
-	}
-}
-
 // doRequest executes an HTTP request using the client's connection pool and global options.
 // It clones the global options to avoid mutation, merges any per-request options, and stores
-// the response in the client's history map for later retrieval via Response() or Responses().
+// the response in the attached History, if any.
 func (c *Client) doRequest(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	// Start with cloned global options, then apply per-request options on top
 	opt := c.CloneOptions()
@@ -208,14 +97,12 @@ func (c *Client) doRequest(method string, url string, payload any, opts ...*opti
 	// Perform the request with the merged options
 	resp, err := doRequest(method, url, payload, opt)
 
-	// Store the response in the map
-	c.mu.Lock()
-	c.cleanupResponses() // Lazy cleanup before adding new entry
-	c.responses[resp.UniqueIdentifier] = &responseEntry{
-		response:  resp,
-		createdAt: time.Now(),
+	c.mu.RLock()
+	h := c.history
+	c.mu.RUnlock()
+	if h != nil {
+		h.Add(resp)
 	}
-	c.mu.Unlock()
 
 	return resp, err
 }

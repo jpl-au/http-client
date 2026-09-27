@@ -13,7 +13,7 @@ A Go HTTP client library with support for compression, progress tracking, and co
 - Request tracing with UUID/ULID identifiers
 - Protocol selection (HTTP/1, HTTP/2)
 - Multipart form uploads
-- Reusable client with connection pooling and response history
+- Reusable client with connection pooling and optional response history
 
 ## Installation
 
@@ -222,13 +222,13 @@ The body is written to a temporary file beside the destination and renamed into 
 
 ## Reusable Client
 
-For applications making multiple HTTP requests, the `Client` type provides connection pooling, shared configuration, and response history tracking.
+For applications making multiple HTTP requests, the `Client` type provides connection pooling, shared configuration, and optional response history.
 
 ### Why Use a Reusable Client?
 
 - **Connection pooling**: Requests to the same host reuse TCP connections, reducing latency and resource usage
 - **Shared configuration**: Global options (headers, authentication) are applied to all requests automatically
-- **Response history**: All responses are stored for later inspection, useful for debugging, logging, or batch operations
+- **Response history**: When turned on, responses are stored for later inspection, useful for debugging, logging, or batch operations
 
 ### Basic Usage
 
@@ -243,16 +243,19 @@ resp2, _ := c.Post(url2, data)
 
 ### Response History
 
-The client stores all responses in an internal map, enabling batch operations and deferred error handling:
+Response history is off by default. Stored responses hold bodies, request payloads and credentials, so they are recorded only on request. Attach a `history.History` to record every response the client returns:
 
 ```go
+h := history.New()
+c.SetHistory(h)
+
 // Make multiple requests
 c.Get(url1)
 c.Get(url2)
 c.Post(url3, data)
 
-// Inspect all responses afterwards
-for _, resp := range c.Responses() {
+// Inspect all responses afterwards, oldest first
+for resp := range h.All() {
     if resp.Error != nil {
         log.Printf("Request to %s failed: %v", resp.URL, resp.Error)
         continue
@@ -261,25 +264,24 @@ for _, resp := range c.Responses() {
 }
 
 // Retrieve a specific response by its unique identifier
-resp := c.Response(someID)
+resp, ok := h.Lookup(someID)
 ```
 
 The `Error` field on each response allows you to collect results from many requests and check for failures later, rather than handling errors inline.
 
-### Memory Management
-
-Response history grows with each request. To prevent unbounded memory usage, the client provides automatic limits and manual controls:
+A history is bounded. It keeps at most 100 responses for at most 5 minutes by default:
 
 ```go
-// Configure limits (call before making requests)
-c.SetMaxResponses(500)              // Maximum responses to retain (default: 1000)
-c.SetResponseTTL(10 * time.Minute)  // Expire responses after this duration (default: 5 minutes)
+h := history.New().
+    SetLimit(500).                 // Keep up to 500 responses
+    SetMaxAge(10 * time.Minute)    // Expire responses after 10 minutes (0 keeps them until the limit removes them)
 
-// Manual cleanup
-c.Clear()  // Remove all stored responses
+h.Len()             // Number of stored responses
+h.Clear()           // Remove all stored responses
+c.SetHistory(nil)   // Stop recording
 ```
 
-Responses older than the TTL are automatically removed during cleanup. When the maximum is reached, the oldest entries are evicted first.
+When the history is full, expired responses are removed first, then the oldest. One history can record the responses of several clients.
 
 ### Managing Global Options
 
