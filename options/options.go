@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ua defines the default User-Agent string for requests
@@ -49,6 +50,7 @@ type Option struct {
 	File            FileConfig        // File upload metadata
 	ResponseWriter  ResponseWriter    // Define the type of response writer
 	MaxBodySize     int64             // Maximum size in bytes of a response body held in memory. Zero or less means no limit.
+	StallTimeout    time.Duration     // Longest time a request may go with no data sent or received. Zero or less means no limit.
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
 	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
@@ -77,6 +79,7 @@ const (
 	settingTransport
 	settingScheme
 	settingMaxBodySize
+	settingStallTimeout
 )
 
 // has reports whether s includes setting.
@@ -337,6 +340,23 @@ func (opt *Option) SetContext(ctx context.Context) *Option {
 	return opt
 }
 
+// SetStallTimeout cancels a request when no data is sent or received for the
+// given time. The request then fails with an error that wraps
+// client.ErrStalled. The timer starts with the request and restarts each time
+// data is sent or received, so a large download is not cancelled while data is
+// still arriving. The timer also runs while the server prepares its reply, so a
+// server that takes longer than the timeout to start replying is cancelled too.
+//
+// A context deadline is different: it limits the time for the whole request.
+// A timeout of zero or less, the default, means no limit.
+func (opt *Option) SetStallTimeout(timeout time.Duration) *Option {
+	opt.mu.Lock()
+	opt.StallTimeout = timeout
+	opt.explicit |= settingStallTimeout
+	opt.mu.Unlock()
+	return opt
+}
+
 // Merge combines the settings from another Option instance into this one.
 // Merge copies each setting that the source holds with a value other than its
 // default, and each setting that a setter chose on the source, even when the
@@ -416,6 +436,9 @@ func (opt *Option) Merge(src *Option) *Option {
 	}
 	if src.MaxBodySize != 0 || src.explicit.has(settingMaxBodySize) {
 		opt.MaxBodySize = src.MaxBodySize
+	}
+	if src.StallTimeout != 0 || src.explicit.has(settingStallTimeout) {
+		opt.StallTimeout = src.StallTimeout
 	}
 
 	// Merge compression config
@@ -536,6 +559,7 @@ func (opt *Option) Clone() *Option {
 	clone.Context = opt.Context
 	clone.ResponseWriter = opt.ResponseWriter
 	clone.MaxBodySize = opt.MaxBodySize
+	clone.StallTimeout = opt.StallTimeout
 	clone.File = opt.File
 	clone.Range = opt.Range
 

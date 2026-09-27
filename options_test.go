@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
@@ -257,7 +258,8 @@ func TestMergeResetSetters(t *testing.T) {
 			OnDownloadProgress(func(int64, int64) {}).
 			SetTransport(&http.Transport{}).
 			SetProtocolScheme("https").
-			SetMaxBodySize(1024)
+			SetMaxBodySize(1024).
+			SetStallTimeout(time.Second)
 	}
 
 	t.Run("default source keeps the settings", func(t *testing.T) {
@@ -282,6 +284,9 @@ func TestMergeResetSetters(t *testing.T) {
 		if dest.MaxBodySize != 1024 {
 			t.Errorf("MaxBodySize = %d, want 1024", dest.MaxBodySize)
 		}
+		if dest.StallTimeout != time.Second {
+			t.Errorf("StallTimeout = %v, want %v", dest.StallTimeout, time.Second)
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -292,7 +297,8 @@ func TestMergeResetSetters(t *testing.T) {
 			OnDownloadProgress(nil).
 			SetTransport(nil).
 			SetProtocolScheme("").
-			SetMaxBodySize(0))
+			SetMaxBodySize(0).
+			SetStallTimeout(0))
 
 		if dest.Context != nil {
 			t.Errorf("Context = %v, want nil", dest.Context)
@@ -311,6 +317,9 @@ func TestMergeResetSetters(t *testing.T) {
 		}
 		if dest.MaxBodySize != 0 {
 			t.Errorf("MaxBodySize = %d, want 0", dest.MaxBodySize)
+		}
+		if dest.StallTimeout != 0 {
+			t.Errorf("StallTimeout = %v, want 0", dest.StallTimeout)
 		}
 	})
 }

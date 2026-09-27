@@ -50,7 +50,7 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 // This function orchestrates the entire request-response cycle, delegating
 // to helper functions for transport configuration, payload preparation,
 // and response processing. The http.Client follows redirects.
-func send(method string, url string, payload any, opt *options.Option, start time.Time) (response.Response, error) {
+func send(method string, url string, payload any, opt *options.Option, start time.Time) (_ response.Response, err error) {
 
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
@@ -68,12 +68,32 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	client, release := configureClient(opt)
 	defer release()
 
+	if opt.StallTimeout > 0 {
+		parent := opt.Context
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, watch := watchStall(parent, opt.StallTimeout)
+		opt.Context = ctx
+		next := client.Transport
+		if next == nil {
+			next = http.DefaultTransport
+		}
+		client.Transport = &stallTransport{next: next, watch: watch}
+		defer func() {
+			if err != nil && watch.stalled() {
+				err = fmt.Errorf("%w: no data for %v: %w", ErrStalled, opt.StallTimeout, err)
+			}
+			watch.stop()
+		}()
+	}
+
 	// Create the response before anything that can fail, so every failure
 	// is recorded with the request's identifier.
 	resp := response.New(id, url, method, payload, opt)
 
 	// Normalise the URL
-	url, err := normaliseURL(url, opt.Transport.Scheme)
+	url, err = normaliseURL(url, opt.Transport.Scheme)
 	if err != nil {
 		return resp, fmt.Errorf("supplied url did not pass url.Parse(): %w", err)
 	}

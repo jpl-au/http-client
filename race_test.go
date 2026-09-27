@@ -184,6 +184,7 @@ func TestOptionMethodsRace(t *testing.T) {
 		wg.Go(func() {
 			for range raceIterations {
 				opt.SetContext(context.Background())
+				opt.SetStallTimeout(time.Second)
 			}
 		})
 

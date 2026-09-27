@@ -235,6 +235,21 @@ if errors.Is(err, client.ErrBodyTooLarge) {
 
 The limit applies to the body after decompression, and to the error response body of a file download. A body written to a file has no limit. `SetMaxBodySize(0)` removes a limit, for example one set in a client's global options.
 
+## Stalled Requests
+
+`SetStallTimeout` cancels a request when no data is sent or received for a set time, for example when a server stops sending data but keeps the connection open. There is no limit by default.
+
+```go
+opt := options.New().SetStallTimeout(30 * time.Second)
+
+resp, err := client.Get(url, opt)
+if errors.Is(err, client.ErrStalled) {
+    // No data was sent or received for 30 seconds
+}
+```
+
+The timer restarts each time data is sent or received, so a large download is not cancelled while data is still arriving. A context deadline is different: it limits the time for the whole request. The timer also runs while the server prepares its reply, so set a time longer than the server needs to start replying. `SetStallTimeout(0)` removes a limit, for example one set in a client's global options.
+
 ---
 
 ## Reusable Client

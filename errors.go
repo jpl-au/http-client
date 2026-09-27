@@ -40,4 +40,8 @@ var (
 	// ErrBodyTooLarge is returned when a response body held in memory is longer
 	// than the limit set with Option.SetMaxBodySize.
 	ErrBodyTooLarge = errors.New("response body too large")
+
+	// ErrStalled is returned when no data is sent or received for longer than
+	// the timeout set with Option.SetStallTimeout.
+	ErrStalled = errors.New("request stalled")
 )
