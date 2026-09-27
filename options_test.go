@@ -13,6 +13,7 @@ import (
 	"time"
 
 	client "github.com/jpl-au/http-client"
+	"github.com/jpl-au/http-client/form"
 	"github.com/jpl-au/http-client/options"
 )
 
@@ -202,9 +203,9 @@ func TestPackageFunctionsLeaveOptionUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostFile() error = %v", err)
 	}
-	_, err = client.PostMultipartUpload(server.URL+"/upload/multipart", map[string]any{"k": "v"}, opt)
+	_, err = client.Post(server.URL+"/upload/multipart", form.New().Field("k", "v"), opt)
 	if err != nil {
-		t.Fatalf("PostMultipartUpload() error = %v", err)
+		t.Fatalf("Post() with a form error = %v", err)
 	}
 
 	if len(opt.Header) != 0 {

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jpl-au/http-client/form"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 )
@@ -343,13 +344,21 @@ func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 	case url.Values:
 		opt.AddHeader(ContentType, URLencoded)
 		payload = v.Encode()
-	case multipartForm:
-		body, contentType, err := v.encode()
+	case *form.Form:
+		// The form checks its files and works out its length now, so a file
+		// that cannot be read fails before the request is sent.
+		length, err := v.Len()
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode multipart form: %w", err)
+			return nil, fmt.Errorf("failed to prepare form: %w", err)
 		}
-		opt.AddHeader(ContentType, contentType)
-		payload = body
+		opt.AddHeader(ContentType, v.ContentType())
+		return &payloadSource{
+			open: func() (io.Reader, error) {
+				return v.Reader(), nil
+			},
+			length:     length,
+			replayable: true,
+		}, nil
 	}
 
 	// If payload is an *os.File and no file path is configured, extract the path

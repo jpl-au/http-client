@@ -1,13 +1,11 @@
 package options
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"mime"
-	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/jpl-au/http-client/internal/contenttype"
 )
 
 // FileConfig holds file upload metadata.
@@ -110,10 +108,9 @@ func (f *FileConfig) SetSize(size int64) {
 	f.size = size
 }
 
-// inferContentType determines the MIME type of a file based on its content and extension.
-// If it is unable to determine a MIME type, it defaults to application/octet-stream.
+// inferContentType sets the Content-Type header to the content type of the
+// file, unless the header is already set.
 func (opt *Option) inferContentType(file *os.File, fileInfo os.FileInfo) error {
-	// check if a content type has already been defined
 	opt.mu.RLock()
 	hasContentType := opt.Header.Get("Content-Type") != ""
 	opt.mu.RUnlock()
@@ -121,34 +118,10 @@ func (opt *Option) inferContentType(file *os.File, fileInfo os.FileInfo) error {
 		return nil
 	}
 
-	// default content type: application/octet-stream
-	contentType := "application/octet-stream"
-
-	// Use a buffer to read a portion of the file for detecting its MIME type.
-	// An empty file reads io.EOF at once and is still a valid upload.
-	buffer := make([]byte, 512)
-	n, err := file.Read(buffer)
-	if err != nil && !errors.Is(err, io.EOF) {
+	contentType, err := contenttype.Detect(file, fileInfo.Name())
+	if err != nil {
 		return err
 	}
-
-	// Reset the file pointer after reading.
-	if _, err := file.Seek(0, 0); err != nil {
-		return err
-	}
-
-	// Try to detect MIME type from file content.
-	detectedContentType := http.DetectContentType(buffer[:n])
-	if detectedContentType != "" {
-		contentType = detectedContentType
-	}
-
-	// Check for MIME type based on file extension and use it if available.
-	extMimeType := mime.TypeByExtension(filepath.Ext(fileInfo.Name()))
-	if extMimeType != "" {
-		contentType = extMimeType
-	}
-
 	opt.AddHeader("Content-Type", contentType)
 	return nil
 }

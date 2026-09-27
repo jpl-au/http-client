@@ -33,12 +33,6 @@ func PostFile(url string, filename string, opts ...*options.Option) (response.Re
 	return doRequest(http.MethodPost, url, uploadFile(filename), opts...)
 }
 
-// PostMultipartUpload performs a POST multipart form-data upload request to the specified URL.
-// This is the most common method for file uploads and creating new resources with file attachments.
-func PostMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
-	return MultipartUpload(http.MethodPost, url, payload, opts...)
-}
-
 // Put performs an HTTP PUT to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // The package documentation lists the payload types.
@@ -57,13 +51,6 @@ func PutFile(url string, filename string, opts ...*options.Option) (response.Res
 	return doRequest(http.MethodPut, url, uploadFile(filename), opts...)
 }
 
-// PutMultipartUpload performs a PUT multipart form-data upload request to the specified URL.
-// This method is less common but can be used when updating an entire resource with new data,
-// including file attachments.
-func PutMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
-	return MultipartUpload(http.MethodPut, url, payload, opts...)
-}
-
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // The package documentation lists the payload types.
@@ -80,13 +67,6 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodPatch, url, uploadFile(filename), opts...)
-}
-
-// PatchMultipartUpload performs a PATCH multipart form-data upload request to the specified URL.
-// This method can be used for partial updates to a resource, which might include updating or
-// adding new file attachments.
-func PatchMultipartUpload(url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
-	return MultipartUpload(http.MethodPatch, url, payload, opts...)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.

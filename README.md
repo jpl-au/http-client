@@ -12,7 +12,7 @@ A Go HTTP client library with support for compression, progress tracking, and co
 - Range requests for partial downloads and resumable transfers
 - Request tracing with UUID/ULID identifiers
 - Protocol selection (HTTP/1, HTTP/2)
-- Multipart form uploads
+- Multipart form uploads that stream files instead of holding them in memory
 - Reusable client with connection pooling and optional response history
 
 ## Installation
@@ -72,10 +72,28 @@ resp, err := client.Post(url, payload, opt)
 | `io.Reader` | Read to the end. A reader that is also an `io.Seeker` can be sent again after a 307 or 308 redirect |
 | `*os.File` | The file, opened again by name so it can be sent again after a redirect |
 | `url.Values` | URL-encoded, with the `Content-Type` `application/x-www-form-urlencoded` |
+| `*form.Form` | `multipart/form-data`, with its parts in the order they were added |
 
 ```go
 resp, err := client.Post(url, url.Values{"name": {"Ada"}, "tag": {"a", "b"}})
 ```
+
+## Forms
+
+Build a multipart form with the `form` package. Add fields and files in the order the server expects them. A name can be used more than once:
+
+```go
+import "github.com/jpl-au/http-client/form"
+
+f := form.New().
+    Field("title", "Quarterly report").
+    File("attachment", "/path/report.pdf").
+    File("attachment", "/path/summary.pdf")
+
+resp, err := client.Post(url, f)
+```
+
+Each file is read in small pieces while the form is sent, so a large file is not held in memory. Before sending, the form checks every file and works out the exact size of the request, so the request has a `Content-Length` and upload progress can show a percentage. A file that cannot be read fails the request before anything is sent. A file whose size changes during the upload fails the request with `form.ErrFileChanged`. After a 307 or 308 redirect, the form is sent again from its files. Each file's content type is detected from its name and content.
 
 ## File Uploads
 

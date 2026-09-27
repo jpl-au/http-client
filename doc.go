@@ -35,10 +35,16 @@
 //     redirect.
 //   - url.Values is sent URL-encoded, with the Content-Type
 //     application/x-www-form-urlencoded.
+//   - A *form.Form is sent as multipart/form-data, with its parts in the order
+//     they were added. Its files are read while the form is sent.
 //
 // For example:
 //
 //	resp, err := client.Post(url, url.Values{"name": {"Ada"}, "tag": {"a", "b"}})
+//
+//	resp, err := client.Post(url, form.New().
+//	    Field("title", "Quarterly report").
+//	    File("attachment", "/path/report.pdf"))
 //
 // # Reusable Client
 //
