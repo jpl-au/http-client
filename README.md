@@ -6,13 +6,17 @@ A Go HTTP client library with support for compression, progress tracking, and co
 
 - Simple API for GET, POST, PUT, PATCH, DELETE requests
 - Compression (gzip, deflate, brotli, custom)
-- Upload and download progress tracking
+- Upload and download progress tracking, with a ready-made terminal display
 - File uploads with automatic content-type detection
+- URL-encoded forms from `url.Values`, and multipart forms that stream files instead of holding them in memory
 - Redirect handling that follows net/http rules
 - Range requests for partial downloads and resumable transfers
-- Request tracing with UUID/ULID identifiers
+- Downloads split into segments that download at the same time
+- Checksum checks, against a checksum you supply or one the server sends
+- A size limit for response bodies held in memory
+- A timeout that cancels a request when no data is sent or received
+- Request tracing with ULID, UUID or random identifiers
 - Protocol selection (HTTP/1, HTTP/2)
-- Multipart form uploads that stream files instead of holding them in memory
 - Reusable client with connection pooling and optional response history
 
 ## Installation
@@ -160,6 +164,12 @@ resp, err := client.PostFile(url, "large-file.zip", opt)
 
 The total is -1 when the size is unknown, for example for a compressed or chunked response.
 
+The `progress` package has a ready-made callback that shows the percentage, speed and time remaining in the terminal:
+
+```go
+opt := options.New().OnDownloadProgress(progress.Func())
+```
+
 ## Redirect Handling
 
 Redirects are not followed by default:
@@ -225,9 +235,10 @@ A partial file has one resumed download at a time in a process. Another resumed 
 Add unique identifiers to requests for distributed tracing:
 
 ```go
-opt := options.New().SetIdentifierType(options.IdentifierULID)  // default
-// or
+opt := options.New().SetIdentifierType(options.IdentifierULID)   // default
 opt := options.New().SetIdentifierType(options.IdentifierUUID)
+opt := options.New().SetIdentifierType(options.IdentifierRandom) // a random string
+opt := options.New().SetIdentifierType(options.IdentifierNone)   // no X-Trace-ID header
 
 // Access the identifier from the response
 fmt.Println(resp.UniqueIdentifier)
@@ -240,7 +251,7 @@ Control the HTTP protocol version:
 ```go
 opt := options.New().SetProtocol(options.HTTP1)  // Force HTTP/1.1
 opt := options.New().SetProtocol(options.HTTP2)  // Force HTTP/2 (HTTPS only)
-opt := options.New().SetProtocol(options.Both)   // Auto-negotiate (default)
+opt := options.New().SetProtocol(options.HTTPAny) // Auto-negotiate (default)
 ```
 
 ## Writing Responses to a File

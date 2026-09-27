@@ -21,7 +21,7 @@ type Protocol int
 // Protocol constants for HTTP version selection.
 //
 // Usage considerations:
-//   - Both: Recommended for most applications. Provides automatic protocol selection
+//   - HTTPAny: Recommended for most applications. Provides automatic protocol selection
 //     based on the URL scheme and server capabilities.
 //   - HTTP1: Use when targeting servers that have HTTP/2 compatibility issues, or when
 //     debugging protocol-specific behaviour.
@@ -32,9 +32,9 @@ type Protocol int
 //     environments such as internal services or behind a TLS-terminating proxy. The
 //     server must explicitly support h2c; most public servers do not.
 const (
-	// Both uses HTTP/1.1 for http:// URLs and HTTP/2 for https:// URLs.
+	// HTTPAny uses HTTP/1.1 for http:// URLs and HTTP/2 for https:// URLs.
 	// This is the default behaviour and matches Go's standard HTTP client.
-	Both Protocol = iota
+	HTTPAny Protocol = iota
 
 	// HTTP1 forces HTTP/1.1 for all requests, regardless of URL scheme.
 	// Useful for compatibility with servers that have HTTP/2 issues.
@@ -61,7 +61,7 @@ type TransportConfig struct {
 	// 0 uses Go's default (1MB).
 	MaxResponseHeaderBytes int64
 
-	// Protocol specifies HTTP protocol version selection (Both, HTTP1, HTTP2, UnencryptedHTTP2).
+	// Protocol specifies HTTP protocol version selection (HTTPAny, HTTP1, HTTP2, UnencryptedHTTP2).
 	Protocol Protocol
 
 	// Scheme defines the protocol scheme (e.g., "https://", "http://") for requests.
@@ -72,7 +72,7 @@ type TransportConfig struct {
 // It sets no transport, so requests share the client's connection pool.
 func defaultTransportConfig() TransportConfig {
 	return TransportConfig{
-		Protocol: Both,
+		Protocol: HTTPAny,
 	}
 }
 
@@ -112,7 +112,7 @@ func (opt *Option) SetMaxResponseHeaderBytes(size int64) *Option {
 
 // SetProtocol configures which HTTP protocol version(s) to use for requests.
 //
-// The default is Both, which uses HTTP/1.1 for http:// URLs and negotiates
+// The default is HTTPAny, which uses HTTP/1.1 for http:// URLs and negotiates
 // HTTP/2 for https:// URLs via ALPN. This matches Go's standard behaviour.
 //
 // Protocol selection is applied per-request by cloning the transport, ensuring

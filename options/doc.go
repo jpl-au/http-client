@@ -8,14 +8,17 @@
 //	    AddHeader("Content-Type", "application/json").
 //	    SetCompression(options.CompressionGzip)
 //
-// Options use embedded config structs for organization:
+// Options group related settings in config structs:
 //   - [LoggingConfig] - logging settings
 //   - [CompressionConfig] - compression type and custom compressors
-//   - [RedirectConfig] - redirect behavior
+//   - [RedirectConfig] - redirect behaviour
 //   - [ProgressConfig] - upload/download progress callbacks
 //   - [TransportConfig] - HTTP transport settings
 //   - [TracingConfig] - request tracing/correlation IDs
 //   - [FileConfig] - file upload metadata
+//   - [ResponseWriter] - whether the response body goes to memory or a file
+//   - [RangeConfig] - range requests and resumed downloads
+//   - [ChecksumConfig] - the checksum a download must match
 //
 // # Compression
 //

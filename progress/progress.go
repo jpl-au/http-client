@@ -9,9 +9,9 @@ import (
 	"golang.org/x/term"
 )
 
-// getTerminalWidth retrieves the width of the terminal window.
+// terminalWidth retrieves the width of the terminal window.
 // If the terminal size cannot be determined, it defaults to a width of 80 characters.
-func getTerminalWidth() int {
+func terminalWidth() int {
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
 		return 80 // Default fallback width
@@ -19,10 +19,11 @@ func getTerminalWidth() int {
 	return width
 }
 
-// CreateProgressFunc creates a progress reporting function to display
-// upload/download progress in the terminal. It provides real-time feedback,
-// including the percentage completed, speed, and estimated time remaining (ETA).
-func CreateProgressFunc() func(int64, int64) {
+// Func returns a progress callback that displays upload or download progress
+// in the terminal: the percentage completed, the speed, and the estimated time
+// remaining (ETA). Pass it to Option.OnUploadProgress or
+// Option.OnDownloadProgress.
+func Func() func(int64, int64) {
 	var lastUpdate time.Time // Tracks the last time the progress was updated
 	var lastBytes int64      // Tracks the number of bytes processed during the last update
 
@@ -40,7 +41,7 @@ func CreateProgressFunc() func(int64, int64) {
 			speed = float64(bytesSinceLast) / timeSinceLast.Seconds()
 		}
 
-		width := getTerminalWidth() // Dynamically get terminal width
+		width := terminalWidth()    // Dynamically get terminal width
 		const progressBarWidth = 50 // Fixed width for the progress bar
 
 		if totalBytes > 0 {

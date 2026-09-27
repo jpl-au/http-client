@@ -99,7 +99,7 @@ func TestOption_Merge(t *testing.T) {
 			TrackBeforeCompression().
 			SetCompression(options.CompressionNone).
 			SetIdentifierType(options.IdentifierNone).
-			SetProtocol(options.Both).
+			SetProtocol(options.HTTPAny).
 			SetMaxResponseHeaderBytes(0).
 			ClearRange().
 			SetBufferOutput()
@@ -121,8 +121,8 @@ func TestOption_Merge(t *testing.T) {
 		if got := dest.IdentifierType(); got != options.IdentifierNone {
 			t.Errorf("IdentifierType() = %q, want %q", got, options.IdentifierNone)
 		}
-		if dest.Transport.Protocol != options.Both {
-			t.Errorf("Transport.Protocol = %d, want %d", dest.Transport.Protocol, options.Both)
+		if dest.Transport.Protocol != options.HTTPAny {
+			t.Errorf("Transport.Protocol = %d, want %d", dest.Transport.Protocol, options.HTTPAny)
 		}
 		if dest.Transport.MaxResponseHeaderBytes != 0 {
 			t.Errorf("Transport.MaxResponseHeaderBytes = %d, want 0", dest.Transport.MaxResponseHeaderBytes)

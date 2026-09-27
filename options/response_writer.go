@@ -21,7 +21,7 @@ const (
 	WriteToBuffer ResponseWriterType = "buffer"
 
 	// WriteToFile indicates that responses should be written directly to a file.
-	// This is recommended for large responses to minimize memory usage.
+	// This is recommended for large responses to minimise memory usage.
 	WriteToFile ResponseWriterType = "file"
 )
 
@@ -39,7 +39,7 @@ type ResponseWriter struct {
 	FilePath string
 
 	// writer is the underlying io.WriteCloser that handles the actual writing.
-	// It is initialized during Option.InitialiseWriter() based on the Type.
+	// It is initialised during Option.InitialiseWriter() based on the Type.
 	// For WriteToBuffer, this will be a bytes.Buffer.
 	// For WriteToFile, this will be an *os.File.
 	writer io.WriteCloser
@@ -120,11 +120,11 @@ func matchDestinationPermissions(file *os.File, dest string) error {
 	return file.Chmod(info.Mode().Perm())
 }
 
-// createFor creates the new file name, which will later replace dest.
+// createLike creates the new file name, which will later replace dest.
 // When dest exists, the file takes its permissions, so publishing a download
 // never changes who can read it. Otherwise the file gets 0666 less the process
 // umask, as os.Create would give.
-func createFor(name, dest string) (*os.File, error) {
+func createLike(name, dest string) (*os.File, error) {
 	perm := fs.FileMode(0o666)
 	info, err := os.Stat(dest)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -187,7 +187,7 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 				if err := os.Remove(partial); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return nil, fmt.Errorf("failed to remove partial file: %w", err)
 				}
-				file, err = createFor(partial, filePath)
+				file, err = createLike(partial, filePath)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to open partial file: %w", err)
@@ -196,7 +196,7 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		} else {
 			// The temporary file must be in the destination's directory:
 			// a rename across file systems fails.
-			file, err := createFor(filePath+"."+rand.Text()+".part", filePath)
+			file, err := createLike(filePath+"."+rand.Text()+".part", filePath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create file: %w", err)
 			}

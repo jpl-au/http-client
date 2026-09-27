@@ -67,7 +67,7 @@ type Response struct {
 	IsPartialContent bool          // True if response is 206 Partial Content
 }
 
-// New initializes a new Response instance with basic details.
+// New initialises a new Response instance with basic details.
 // id is the identifier of the request, as sent in its trace header.
 func New(id string, url string, method string, payload any, opt *options.Option) Response {
 	return Response{
@@ -115,8 +115,8 @@ func (r *Response) Buffer() *bytes.Buffer {
 	return r.Body.Buffer
 }
 
-// PopulateResponse populates the Response struct with data from an http.Response
-func (r *Response) PopulateResponse(resp *http.Response, start time.Time) {
+// Populate populates the Response struct with data from an http.Response
+func (r *Response) Populate(resp *http.Response, start time.Time) {
 	r.Status = resp.Status                     // Set HTTP status message
 	r.StatusCode = resp.StatusCode             // Set HTTP status code
 	r.Proto = resp.Proto                       // Set protocol used

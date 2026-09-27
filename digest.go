@@ -25,12 +25,12 @@ var digestAlgorithms = []struct {
 // that completes a whole file, as a resumed or segmented download does, is
 // checked against Repr-Digest. Any other range response is checked against
 // Content-Digest, which covers only the bytes it holds.
-func serverDigest(r *http.Response, whole bool) *checksum {
+func serverDigest(r *http.Response, wholeFile bool) *checksum {
 	var headers []string
 	switch {
 	case r.StatusCode == http.StatusOK:
 		headers = []string{"Repr-Digest", "Content-Digest"}
-	case r.StatusCode == http.StatusPartialContent && whole:
+	case r.StatusCode == http.StatusPartialContent && wholeFile:
 		headers = []string{"Repr-Digest"}
 	case r.StatusCode == http.StatusPartialContent:
 		headers = []string{"Content-Digest"}

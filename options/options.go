@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// ua defines the default User-Agent string for requests
-const ua = "jpl-au/http-client/v0.1.0"
+// defaultUserAgent defines the default User-Agent string for requests
+const defaultUserAgent = "jpl-au/http-client/v0.1.0"
 
 // Common errors returned by Option methods
 var (
@@ -27,7 +27,7 @@ var (
 	ErrInvalidRange       = errors.New("invalid byte range")
 )
 
-// Option provides configuration for HTTP requests. It allows customization of various aspects
+// Option provides configuration for HTTP requests. It allows customisation of various aspects
 // of the request including headers, compression, logging, response handling, and progress tracking.
 // If no options are provided when making a request, a default configuration is automatically generated.
 //
@@ -102,7 +102,7 @@ func New(opts ...*Option) *Option {
 		if opts[0].initialised {
 			return opts[0]
 		}
-		// If opts[0] is not initialized, initialize and merge it
+		// If opts[0] is not initialised, initialise and merge it
 		opt := defaultOption()
 		opt.Merge(opts[0])
 		return opt
@@ -111,7 +111,7 @@ func New(opts ...*Option) *Option {
 	return defaultOption()
 }
 
-// defaultOption initializes and returns a default Option with pre-configured settings.
+// defaultOption initialises and returns a default Option with pre-configured settings.
 func defaultOption() *Option {
 	return &Option{
 		initialised:     true,
@@ -120,7 +120,7 @@ func defaultOption() *Option {
 		Logging:         defaultLoggingConfig(),
 		Header:          http.Header{},
 		Compression:     defaultCompressionConfig(),
-		UserAgent:       ua,
+		UserAgent:       defaultUserAgent,
 		Redirect:        defaultRedirectConfig(),
 		Tracing:         defaultTracingConfig(),
 		Transport:       defaultTransportConfig(),
@@ -191,7 +191,7 @@ func (opt *Option) SetClient(client *http.Client) *Option {
 
 // UseSharedClient enables the use of the shared HTTP client for this Option instance.
 // Using a shared client provides better performance through connection pooling and reuse,
-// especially when making multiple requests to the same host. This is the default behavior.
+// especially when making multiple requests to the same host. This is the default behaviour.
 // The shared client is thread-safe and can be used concurrently across multiple goroutines.
 func (opt *Option) UseSharedClient() *Option {
 	opt.mu.Lock()
@@ -204,7 +204,7 @@ func (opt *Option) UseSharedClient() *Option {
 // UsePerRequestClient disables the use of the shared HTTP client for this Option instance.
 // This creates a new client for each request, providing better isolation at the cost of
 // performance. Use this when you need complete isolation between requests or when you want
-// to customize client behavior for specific requests without affecting other requests.
+// to customise client behaviour for specific requests without affecting other requests.
 // UsePerRequestClient disables shared client and ensures a new client is created
 // The client has no total timeout; use SetContext with a deadline to bound a request.
 func (opt *Option) UsePerRequestClient() *Option {
@@ -216,7 +216,7 @@ func (opt *Option) UsePerRequestClient() *Option {
 }
 
 // AddHeader adds a new header with the specified key and value to the request headers.
-// If the headers map hasn't been initialized, it will be created.
+// If the headers map hasn't been initialised, it will be created.
 // Kept for backwards compatability
 func (opt *Option) AddHeader(key string, value string) *Option {
 	opt.mu.Lock()
@@ -238,7 +238,7 @@ func (opt *Option) ClearHeaders() *Option {
 }
 
 // AddCookie adds a new cookie to the Option's cookie collection.
-// If the cookie slice hasn't been initialized, it will be created.
+// If the cookie slice hasn't been initialised, it will be created.
 func (opt *Option) AddCookie(cookie *http.Cookie) *Option {
 	opt.mu.Lock()
 	if opt.Cookies == nil {
@@ -257,7 +257,7 @@ func (opt *Option) ClearCookies() *Option {
 	return opt
 }
 
-// CreatePayloadReader converts the given payload into an io.Reader along with its size.
+// PayloadReader converts the given payload into an io.Reader along with its size.
 // Supported payload types include:
 //   - nil: Returns a nil reader and a size of -1.
 //   - []byte: Returns a bytes.Reader for the byte slice and its length as size.
@@ -266,7 +266,7 @@ func (opt *Option) ClearCookies() *Option {
 //   - string: Returns a strings.Reader for the string and its length as size.
 //
 // For unsupported payload types, an error is returned.
-func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
+func (opt *Option) PayloadReader(payload any) (io.Reader, int64, error) {
 	switch v := payload.(type) {
 	case nil:
 		// No payload, return nil reader and size -1
@@ -426,7 +426,7 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.Transport.MaxResponseHeaderBytes != 0 || src.explicit.has(settingMaxHeaderBytes) {
 		opt.Transport.MaxResponseHeaderBytes = src.Transport.MaxResponseHeaderBytes
 	}
-	if src.Transport.Protocol != Both || src.explicit.has(settingProtocol) {
+	if src.Transport.Protocol != HTTPAny || src.explicit.has(settingProtocol) {
 		opt.Transport.Protocol = src.Transport.Protocol
 	}
 	if src.Transport.Scheme != "" || src.explicit.has(settingScheme) {
@@ -470,7 +470,7 @@ func (opt *Option) Merge(src *Option) *Option {
 		opt.Compression.Decompressor = src.Compression.Decompressor
 	}
 
-	if src.UserAgent != "" && src.UserAgent != ua {
+	if src.UserAgent != "" && src.UserAgent != defaultUserAgent {
 		opt.UserAgent = src.UserAgent
 	}
 
@@ -524,7 +524,7 @@ func (opt *Option) Merge(src *Option) *Option {
 // The returned Option can be modified without affecting the original.
 //
 // Note: Function references (callbacks) are copied by reference,
-// not cloned. Modifying the underlying function behavior will affect all copies.
+// not cloned. Modifying the underlying function behaviour will affect all copies.
 func (opt *Option) Clone() *Option {
 	clone := New()
 

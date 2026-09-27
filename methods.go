@@ -9,7 +9,7 @@ import (
 
 // Get performs an HTTP GET to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Get(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodGet, url, nil, opts...)
@@ -18,7 +18,7 @@ func Get(url string, opts ...*options.Option) (response.Response, error) {
 // Post performs an HTTP POST to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // The package documentation lists the payload types.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Post(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodPost, url, payload, opts...)
@@ -27,16 +27,16 @@ func Post(url string, payload any, opts ...*options.Option) (response.Response, 
 // PostFile uploads a file to the specified URL using an HTTP POST request.
 // It accepts the URL string as its first argument and the filename as the second argument.
 // The file is read from the specified filename and uploaded as the request payload.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	return doRequest(http.MethodPost, url, uploadFile(filename), opts...)
+	return doRequest(http.MethodPost, url, fileUpload(filename), opts...)
 }
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // The package documentation lists the payload types.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Put(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodPut, url, payload, opts...)
@@ -45,16 +45,16 @@ func Put(url string, payload any, opts ...*options.Option) (response.Response, e
 // PutFile uploads a file to the specified URL using an HTTP PUT request.
 // It accepts the URL string as its first argument and the filename as the second argument.
 // The file is read from the specified filename and uploaded as the request payload.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	return doRequest(http.MethodPut, url, uploadFile(filename), opts...)
+	return doRequest(http.MethodPut, url, fileUpload(filename), opts...)
 }
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // The package documentation lists the payload types.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Patch(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodPatch, url, payload, opts...)
@@ -63,15 +63,15 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // PatchFile uploads a file to the specified URL using an HTTP PATCH request.
 // It accepts the URL string as its first argument and the filename as the second argument.
 // The file is read from the specified filename and uploaded as the request payload.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	return doRequest(http.MethodPatch, url, uploadFile(filename), opts...)
+	return doRequest(http.MethodPatch, url, fileUpload(filename), opts...)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Delete(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodDelete, url, nil, opts...)
@@ -79,7 +79,7 @@ func Delete(url string, opts ...*options.Option) (response.Response, error) {
 
 // Connect performs an HTTP CONNECT to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Connect(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodConnect, url, nil, opts...)
@@ -87,7 +87,7 @@ func Connect(url string, opts ...*options.Option) (response.Response, error) {
 
 // Head performs an HTTP HEAD to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Head(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodHead, url, nil, opts...)
@@ -95,7 +95,7 @@ func Head(url string, opts ...*options.Option) (response.Response, error) {
 
 // Options performs an HTTP OPTIONS to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Options(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodOptions, url, nil, opts...)
@@ -103,7 +103,7 @@ func Options(url string, opts ...*options.Option) (response.Response, error) {
 
 // Trace performs an HTTP TRACE to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional Options to customize the request.
+// Optionally, you can provide additional Options to customise the request.
 // Returns the HTTP response and an error if any.
 func Trace(url string, opts ...*options.Option) (response.Response, error) {
 	return doRequest(http.MethodTrace, url, nil, opts...)
@@ -111,7 +111,7 @@ func Trace(url string, opts ...*options.Option) (response.Response, error) {
 
 // Custom performs a custom HTTP method to the specified URL with the given payload.
 // It accepts the HTTP method as its first argument, the URL string as the second argument,
-// the payload as the third argument, and optionally additional Options to customize the request.
+// the payload as the third argument, and optionally additional Options to customise the request.
 // The payload is sent as the request body whatever the method. The package
 // documentation lists the payload types.
 // Returns the HTTP response and an error if any.

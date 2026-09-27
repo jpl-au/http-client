@@ -11,7 +11,7 @@ type WriteCloserBuffer struct {
 
 // Close satisfies the io.WriteCloser interface but performs no action.
 // This is because there are no resources to release or clean up for an in-memory buffer.
-func (wcb *WriteCloserBuffer) Close() error {
+func (w *WriteCloserBuffer) Close() error {
 	// No actual resource to close; just satisfies io.WriteCloser.
 	return nil
 }

@@ -9,8 +9,8 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// rgsLength defines the length of the random string generated for IdentifierRGS
-const rgsLength = 15
+// randomLength is the length of the random string generated for IdentifierRandom.
+const randomLength = 15
 
 // UniqueIdentifierType defines the type of unique identifier to use for request tracing.
 // It supports both UUID and ULID formats.
@@ -18,10 +18,10 @@ type UniqueIdentifierType string
 
 // Supported identifier types for request tracing
 const (
-	IdentifierNone UniqueIdentifierType = ""     // No identifier
-	IdentifierUUID UniqueIdentifierType = "uuid" // UUID v4
-	IdentifierULID UniqueIdentifierType = "ulid" // ULID timestamp-based identifier
-	IdentifierRGS  UniqueIdentifierType = "rgs"  // Randomly generated string
+	IdentifierNone   UniqueIdentifierType = ""       // No identifier
+	IdentifierUUID   UniqueIdentifierType = "uuid"   // UUID v4
+	IdentifierULID   UniqueIdentifierType = "ulid"   // ULID timestamp-based identifier
+	IdentifierRandom UniqueIdentifierType = "random" // Randomly generated string
 )
 
 // TracingConfig holds request tracing configuration.
@@ -76,8 +76,8 @@ func (opt *Option) GenerateIdentifier() string {
 		id := ulid.MustNew(ulid.Timestamp(time.Now()), opt.Tracing.entropy).String()
 		opt.Tracing.mu.Unlock()
 		return id
-	case IdentifierRGS:
-		return rand.Text()[:rgsLength]
+	case IdentifierRandom:
+		return rand.Text()[:randomLength]
 	}
 	return ""
 }

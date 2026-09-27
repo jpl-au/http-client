@@ -15,74 +15,77 @@ import (
 	"github.com/jpl-au/http-client/response"
 )
 
-// segmentMin is the smallest segment in bytes. The first request asks for a
+// minSegmentSize is the smallest segment in bytes. The first request asks for a
 // segment of this size.
-const segmentMin = 1 << 20
+const minSegmentSize = 1 << 20
 
-// segmented reports whether a request downloads its file in segments.
-func segmented(method string, opt *options.Option) bool {
-	return method == http.MethodGet &&
-		opt.Segments > 1 &&
-		opt.ResponseWriter.Type == options.WriteToFile &&
-		!opt.Range.IsResume &&
-		!opt.HasRange()
+// newSegmented returns the segmented download of a request, or nil when the
+// request does not download its file in segments.
+func newSegmented(method string, client *http.Client, opt *options.Option, sum *checksum, start time.Time) *segmented {
+	if method != http.MethodGet ||
+		opt.Segments <= 1 ||
+		opt.ResponseWriter.Type != options.WriteToFile ||
+		opt.Range.IsResume ||
+		opt.HasRange() {
+		return nil
+	}
+	return &segmented{client: client, opt: opt, sum: sum, start: start}
 }
 
-// segmentedDownload is a file download split into segments that download at
-// the same time. The fields up to start are set before the first request is
-// sent. The others are set from the first response, before any segment starts.
-type segmentedDownload struct {
+// segmented is a file download split into segments that download at the same
+// time. The fields up to start are set when the request starts, template just
+// before the first request is sent, and first when its response arrives. The fields after first are set
+// once that response is known to start a segmented download.
+type segmented struct {
 	client   *http.Client
 	template *http.Request // The first request as it was before net/http sent it.
 	opt      *options.Option
 	sum      *checksum // The checksum set with SetChecksum, or nil.
 	start    time.Time
+	first    *http.Response // The response to the first request.
 
-	header   http.Header // The first response's header, which names the version.
-	tag      string      // The strong validator every segment asks for.
-	total    int64       // The size of the file in bytes.
-	file     *os.File
-	progress *segmentProgress
+	firstRange *response.ContentRange // The first segment, and the size of the file.
+	validator  string                 // The strong validator every segment asks for.
+	file       *os.File
+	progress   *segmentProgress
 }
 
-// finish completes the download from the response to its first request, which
-// asked for the first segment. A response that is not a range continues as an
-// ordinary download. A range with no strong validator, or no known size, is
-// fetched again in one request.
+// complete completes the download from the response to its first request,
+// which asked for the first segment. A response that is not a range continues
+// as an ordinary download. A range with no strong validator, or no known size,
+// is fetched again in one request.
 //
 // Every later request repeats the template. Each one goes to the original
 // address, so net/http applies its redirect rules and adds the cookie jar's
 // cookies once.
-func (d *segmentedDownload) finish(first *http.Response, resp response.Response) (response.Response, error) {
+func (s *segmented) complete(first *http.Response, resp response.Response) (response.Response, error) {
+	s.first = first
 	switch first.StatusCode {
 	case http.StatusPartialContent:
 	case http.StatusRequestedRangeNotSatisfiable:
 		// An empty file has no first byte to ask for.
-		return d.fetchFile(first, resp)
+		return s.fetchAll(resp)
 	default:
-		return processResponse(first, resp, d.opt, d.start, d.sum)
+		return processResponse(first, resp, s.opt, s.start, s.sum)
 	}
 
 	// Bytes the transport decoded are not byte ranges of the file.
 	if first.Uncompressed {
-		return d.fetchFile(first, resp)
+		return s.fetchAll(resp)
 	}
 
-	resp.PopulateResponse(first, d.start)
-	cr, err := parseSegmentRange(first, 0, -1, -1)
+	resp.Populate(first, s.start)
+	cr, err := s.parseRange(first, 0, -1, -1)
 	if err != nil {
 		first.Body.Close()
 		return resp, err
 	}
-	d.tag = options.StrongValidator(first.Header)
-	if d.tag == "" || cr.Total < 0 {
-		return d.fetchFile(first, resp)
+	validator := options.StrongValidator(first.Header)
+	if validator == "" || cr.Total < 0 {
+		return s.fetchAll(resp)
 	}
-	d.header = first.Header
-	d.total = cr.Total
-	d.progress = &segmentProgress{report: d.opt.Progress.OnDownload, total: cr.Total}
 
-	writer, err := d.opt.InitialiseWriter()
+	writer, err := s.opt.InitialiseWriter()
 	if err != nil {
 		first.Body.Close()
 		return resp, fmt.Errorf("failed to initialise writer: %w", err)
@@ -92,14 +95,17 @@ func (d *segmentedDownload) finish(first *http.Response, resp response.Response)
 		first.Body.Close()
 		return resp, errors.Join(fmt.Errorf("segmented download has writer %T, want a file", writer), writer.Close())
 	}
-	d.file = file.File
+	s.firstRange = cr
+	s.validator = validator
+	s.file = file.File
+	s.progress = &segmentProgress{report: s.opt.Progress.OnDownload, total: cr.Total}
 
-	err = d.fetchSegments(first, cr)
+	err = s.fetchRemaining()
 	var digest *checksum
-	if !d.opt.SkipDigestCheck {
+	if !s.opt.SkipDigestCheck {
 		digest = serverDigest(first, true)
 	}
-	for _, c := range []*checksum{d.sum, digest} {
+	for _, c := range []*checksum{s.sum, digest} {
 		if err == nil && c != nil {
 			err = c.hashFile(file.Name())
 			if err == nil {
@@ -114,38 +120,39 @@ func (d *segmentedDownload) finish(first *http.Response, resp response.Response)
 		return resp, err
 	}
 
-	markWholeFile(&resp, first.Header, cr.Total)
+	setWholeFile(&resp, first.Header, cr.Total)
 	return resp, nil
 }
 
-// fetchFile closes the first response and fetches the whole file in one
+// fetchAll closes the first response and fetches the whole file in one
 // request, which repeats the template without its range. The response records
 // the first response until the new one replaces it, so a request that fails
 // still returns what the server sent.
-func (d *segmentedDownload) fetchFile(first *http.Response, resp response.Response) (response.Response, error) {
-	resp.PopulateResponse(first, d.start)
-	if err := first.Body.Close(); err != nil {
-		d.opt.Log("failed to close first segment", "error", err)
+func (s *segmented) fetchAll(resp response.Response) (response.Response, error) {
+	resp.Populate(s.first, s.start)
+	if err := s.first.Body.Close(); err != nil {
+		s.opt.Log("failed to close first segment", "error", err)
 	}
-	req := d.template.Clone(d.template.Context())
+	req := s.template.Clone(s.template.Context())
 	req.Header.Del("Range")
-	r, err := d.client.Do(req)
+	r, err := s.client.Do(req)
 	if err != nil {
 		// When a redirect policy rejects a redirect, Do also returns the
 		// redirect response, with its body already closed.
 		if r != nil {
-			resp.PopulateResponse(r, d.start)
+			resp.Populate(r, s.start)
 		}
 		return resp, err
 	}
-	return processResponse(r, resp, d.opt, d.start, d.sum)
+	return processResponse(r, resp, s.opt, s.start, s.sum)
 }
 
-// fetchSegments writes the first response, and fetches the rest of the file
+// fetchRemaining writes the first response, and fetches the remaining bytes of the file
 // in segments that download at the same time. The first error cancels the
 // other segments.
-func (d *segmentedDownload) fetchSegments(first *http.Response, cr *response.ContentRange) error {
-	if err := d.file.Truncate(d.total); err != nil {
+func (s *segmented) fetchRemaining() error {
+	first, total := s.first, s.firstRange.Total
+	if err := s.file.Truncate(total); err != nil {
 		first.Body.Close()
 		return fmt.Errorf("failed to size segmented download: %w", err)
 	}
@@ -163,26 +170,26 @@ func (d *segmentedDownload) fetchSegments(first *http.Response, cr *response.Con
 		}
 	}
 	wg.Go(func() {
-		fail(d.writeSegment(first, cr.Start, cr.End))
+		fail(s.write(first, s.firstRange.Start, s.firstRange.End))
 	})
-	for _, s := range splitSegments(cr.End+1, d.total, d.opt.Segments-1) {
+	for _, part := range splitSegments(s.firstRange.End+1, total, s.opt.Segments-1) {
 		wg.Go(func() {
-			fail(d.fetchSegment(ctx, s[0], s[1]))
+			fail(s.fetch(ctx, part[0], part[1]))
 		})
 	}
 	wg.Wait()
 	return context.Cause(ctx)
 }
 
-// fetchSegment fetches the bytes from offset from to offset to, of the version
+// fetch fetches the bytes from offset from to offset to, of the version
 // the first response names, and writes them to the file. A response that is
 // not that range of that version fails with an error wrapping
 // ErrRangeMismatch.
-func (d *segmentedDownload) fetchSegment(ctx context.Context, from, to int64) error {
-	req := d.template.Clone(ctx)
+func (s *segmented) fetch(ctx context.Context, from, to int64) error {
+	req := s.template.Clone(ctx)
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(from, 10)+"-"+strconv.FormatInt(to, 10))
-	req.Header.Set("If-Range", d.tag)
-	r, err := d.client.Do(req)
+	req.Header.Set("If-Range", s.validator)
+	r, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -196,25 +203,25 @@ func (d *segmentedDownload) fetchSegment(ctx context.Context, from, to int64) er
 	}
 	// A server that ignores If-Range sends a range of whichever version is
 	// current, so compare every validator the responses carry.
-	if err := checkVersion(r.Header, d.header.Get("ETag"), d.header.Get("Last-Modified")); err != nil {
+	if err := checkVersion(r.Header, s.first.Header.Get("ETag"), s.first.Header.Get("Last-Modified")); err != nil {
 		r.Body.Close()
 		return err
 	}
-	if _, err := parseSegmentRange(r, from, to, d.total); err != nil {
+	if _, err := s.parseRange(r, from, to, s.firstRange.Total); err != nil {
 		r.Body.Close()
 		return err
 	}
-	return d.writeSegment(r, from, to)
+	return s.write(r, from, to)
 }
 
-// writeSegment writes the body of r, which holds the bytes from offset from to
+// write writes the body of r, which holds the bytes from offset from to
 // offset to, to the file at offset from, and checks its Content-Digest.
-func (d *segmentedDownload) writeSegment(r *http.Response, from, to int64) error {
+func (s *segmented) write(r *http.Response, from, to int64) error {
 	defer r.Body.Close()
 
 	var body io.Reader = r.Body
 	var digest *checksum
-	if !d.opt.SkipDigestCheck {
+	if !s.opt.SkipDigestCheck {
 		digest = serverDigest(r, false)
 	}
 	if digest != nil {
@@ -222,7 +229,7 @@ func (d *segmentedDownload) writeSegment(r *http.Response, from, to int64) error
 	}
 
 	expected := to - from + 1
-	written, err := io.Copy(io.NewOffsetWriter(d.file, from), d.progress.reader(io.LimitReader(body, expected)))
+	written, err := io.Copy(io.NewOffsetWriter(s.file, from), s.progress.reader(io.LimitReader(body, expected)))
 	if err != nil {
 		return err
 	}
@@ -236,14 +243,14 @@ func (d *segmentedDownload) writeSegment(r *http.Response, from, to int64) error
 }
 
 // splitSegments divides the bytes from offset from to total into at most n
-// segments of at least segmentMin bytes. Each segment is a first and last
+// segments of at least minSegmentSize bytes. Each segment is a first and last
 // offset.
 func splitSegments(from, total int64, n int) [][2]int64 {
 	remaining := total - from
 	if remaining <= 0 {
 		return nil
 	}
-	count := max(min(int64(n), remaining/segmentMin), 1)
+	count := max(min(int64(n), remaining/minSegmentSize), 1)
 	size := remaining / count
 	segments := make([][2]int64, count)
 	for i := range count {
@@ -257,11 +264,11 @@ func splitSegments(from, total int64, n int) [][2]int64 {
 	return segments
 }
 
-// parseSegmentRange returns the range of a segment response. It returns an
+// parseRange returns the range of a segment response. It returns an
 // error wrapping ErrRangeMismatch unless the response is unencoded and holds
 // the bytes from offset from to offset to, of total. A to or total of -1
 // accepts any value.
-func parseSegmentRange(r *http.Response, from, to, total int64) (*response.ContentRange, error) {
+func (s *segmented) parseRange(r *http.Response, from, to, total int64) (*response.ContentRange, error) {
 	if r.Uncompressed {
 		return nil, fmt.Errorf("%w: the transport decoded the segment", ErrRangeMismatch)
 	}

@@ -7,16 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +29,7 @@ const (
 	SchemeWSS       string = "wss://"
 	ContentType     string = "Content-Type"
 	ContentEncoding string = "Content-Encoding"
-	URLencoded      string = "application/x-www-form-urlencoded"
+	URLEncoded      string = "application/x-www-form-urlencoded"
 )
 
 // doRequest performs the HTTP request to the server/resource.
@@ -59,8 +56,8 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
 	// One identifier names the request in the trace header and in the response.
-	// With tracing off, the response still needs its own identifier: a Client
-	// keys its response history by it.
+	// With tracing off, the response still needs its own identifier, because
+	// a response history looks responses up by it.
 	id := opt.GenerateIdentifier()
 	if opt.Tracing.Type != options.IdentifierNone {
 		opt.AddHeader("X-Trace-ID", id)
@@ -109,21 +106,21 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 
 	if opt.Range.IsResume {
-		releasePartial, err := claimPartialFile(opt.ResponseWriter.FilePath)
+		resume := &resumed{opt: opt, sum: sum}
+		release, err := resume.claim()
 		if err != nil {
 			return resp, err
 		}
-		defer releasePartial()
-	}
-
-	if err := prepareResume(opt); err != nil {
-		return resp, err
+		defer release()
+		if err := resume.prepare(); err != nil {
+			return resp, err
+		}
 	}
 
 	// A segmented download's segments are counted in bytes of the file, so
 	// they must not be encoded.
-	split := segmented(method, opt)
-	if split {
+	segments := newSegmented(method, client, opt, sum, start)
+	if segments != nil {
 		opt.Header.Set("Accept-Encoding", "identity")
 	}
 
@@ -136,8 +133,8 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	if err != nil {
 		return resp, err
 	}
-	if split {
-		req.Header.Set("Range", "bytes=0-"+strconv.Itoa(segmentMin-1))
+	if segments != nil {
+		req.Header.Set("Range", "bytes=0-"+strconv.Itoa(minSegmentSize-1))
 	}
 	if req.Body != nil {
 		// The transport closes the body, but may do so after Do returns.
@@ -162,9 +159,8 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	// net/http adds the cookie jar's cookies to the request it sends, and
 	// adds them again to each new request. Later requests of a segmented
 	// download repeat a copy taken before that.
-	var template *http.Request
-	if split {
-		template = req.Clone(req.Context())
+	if segments != nil {
+		segments.template = req.Clone(req.Context())
 	}
 
 	httpResp, err := client.Do(req)
@@ -172,7 +168,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		// When a redirect policy rejects a redirect, Do also returns the
 		// redirect response, with its body already closed.
 		if httpResp != nil {
-			resp.PopulateResponse(httpResp, start)
+			resp.Populate(httpResp, start)
 		}
 		return resp, err
 	}
@@ -185,91 +181,17 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		(httpResp.StatusCode == http.StatusTemporaryRedirect || httpResp.StatusCode == http.StatusPermanentRedirect) &&
 		httpResp.Header.Get("Location") != "" &&
 		last.Body != nil && last.Body != http.NoBody && last.GetBody == nil {
-		resp.PopulateResponse(httpResp, start)
+		resp.Populate(httpResp, start)
 		httpResp.Body.Close()
 		return resp, ErrPayloadNotReplayable
 	}
 
-	if split {
-		d := &segmentedDownload{client: client, template: template, opt: opt, sum: sum, start: start}
-		return d.finish(httpResp, resp)
+	if segments != nil {
+		return segments.complete(httpResp, resp)
 	}
 
 	// Process final response
 	return processResponse(httpResp, resp, opt, start, sum)
-}
-
-// partialFiles holds the partial files that resumed downloads in this process
-// use. A partial file has one resumed download at a time: another would read
-// the file's size, and then the first would change it.
-var partialFiles = struct {
-	sync.Mutex
-	paths map[string]bool
-}{paths: make(map[string]bool)}
-
-// claimPartialFile claims the partial file of a resumed download to dest, and
-// returns a function that releases it. It returns an error wrapping
-// ErrDownloadInProgress when another resumed download holds the file. The claim
-// uses the absolute path, so it does not detect one file reached through a
-// symbolic or hard link.
-func claimPartialFile(dest string) (func(), error) {
-	path, err := filepath.Abs(options.PartialPath(dest))
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve partial file path: %w", err)
-	}
-	partialFiles.Lock()
-	defer partialFiles.Unlock()
-	if partialFiles.paths[path] {
-		return nil, fmt.Errorf("%w: %s", ErrDownloadInProgress, path)
-	}
-	partialFiles.paths[path] = true
-	return func() {
-		partialFiles.Lock()
-		delete(partialFiles.paths, path)
-		partialFiles.Unlock()
-	}, nil
-}
-
-// prepareResume sets up a resumed download when the request starts.
-//
-// The partial file continues from its size at that moment, and If-Range carries
-// the validator of the representation the file holds: if the resource has
-// changed, the server sends it whole and the file is replaced. Without a strong
-// validator, nothing proves the bytes on disk belong to the current
-// representation, so the download starts again. A missing or empty file needs
-// no range.
-//
-// Resumed downloads ask for the identity encoding, because range offsets count
-// encoded bytes and the file holds decoded ones.
-func prepareResume(opt *options.Option) error {
-	if !opt.Range.IsResume {
-		return nil
-	}
-	opt.Header.Set("Accept-Encoding", "identity")
-
-	info, err := os.Stat(options.PartialPath(opt.ResponseWriter.FilePath))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("failed to stat partial file for resume: %w", err)
-	}
-	if info.Size() == 0 {
-		return nil
-	}
-
-	// If-Range needs a strong validator (RFC 9110, section 13.1.5). Without a
-	// range set, the partial file starts again.
-	validator := opt.Range.Validator
-	if validator == "" || strings.HasPrefix(validator, "W/") {
-		return nil
-	}
-
-	opt.Range.Start = info.Size()
-	opt.Range.End = -1
-	opt.Range.IsSet = true
-	opt.Header.Set("If-Range", validator)
-	return nil
 }
 
 // configureClient returns an HTTP client for one request and a release function
@@ -291,7 +213,7 @@ func configureClient(opt *options.Option) (*http.Client, func()) {
 	}
 
 	release := func() {}
-	if opt.Transport.MaxResponseHeaderBytes != 0 || opt.Transport.Protocol != options.Both {
+	if opt.Transport.MaxResponseHeaderBytes != 0 || opt.Transport.Protocol != options.HTTPAny {
 		transport := client.Transport
 		if transport == nil {
 			transport = http.DefaultTransport
@@ -350,10 +272,10 @@ func applyTransportConfig(t *http.Transport, cfg options.TransportConfig) {
 	}
 }
 
-// uploadFile is a payload that names a file to upload. The file is prepared
+// fileUpload is a payload that names a file to upload. The file is prepared
 // inside the request, so a file that cannot be read fails like any other
 // request: the response records the error.
-type uploadFile string
+type fileUpload string
 
 // payloadSource opens the request payload for one attempt.
 type payloadSource struct {
@@ -366,13 +288,13 @@ type payloadSource struct {
 // request has no payload. A payload is sent with any method.
 func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 	switch v := payload.(type) {
-	case uploadFile:
+	case fileUpload:
 		if err := opt.PrepareFile(string(v)); err != nil {
 			return nil, err
 		}
 		payload = nil
 	case url.Values:
-		opt.AddHeader(ContentType, URLencoded)
+		opt.AddHeader(ContentType, URLEncoded)
 		payload = v.Encode()
 	case *form.Form:
 		// The form checks its files and works out its length now, so a file
@@ -422,12 +344,12 @@ func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 		return nil, nil
 	}
 
-	_, length, err := opt.CreatePayloadReader(payload)
+	_, length, err := opt.PayloadReader(payload)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create payload reader: %w", err)
 	}
 
-	// CreatePayloadReader returns a new reader for byte payloads, and seeks a
+	// PayloadReader returns a new reader for byte payloads, and seeks a
 	// seekable reader back to its start, so each call gives the whole payload.
 	// net/http closes the body after sending it, so a closable reader cannot
 	// be sent twice.
@@ -443,7 +365,7 @@ func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 
 	return &payloadSource{
 		open: func() (io.Reader, error) {
-			reader, _, err := opt.CreatePayloadReader(payload)
+			reader, _, err := opt.PayloadReader(payload)
 			return reader, err
 		},
 		length:     length,
@@ -601,7 +523,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	// Record what was received before reading the body, so a response that
 	// fails later still has its status and headers.
-	resp.PopulateResponse(r, startTime)
+	resp.Populate(r, startTime)
 
 	// A response without a body leaves the output alone, so a file destination
 	// keeps its content, and has nothing to decompress.
@@ -615,15 +537,20 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		return resp, fmt.Errorf("%w: asked for the whole file, received %s", ErrRangeMismatch, r.Header.Get("Content-Range"))
 	}
 
+	var resume *resumed
+	if opt.Range.IsResume {
+		resume = &resumed{opt: opt, sum: sum}
+	}
+
 	// A partial file that already holds the whole file asks for a range past
 	// its end, and the server answers 416 with the file's size.
-	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+	if resume != nil && opt.Range.IsSet && r.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
 		if err == nil && cr.Unit == "bytes" && cr.Total >= 0 && cr.Total <= opt.Range.Start {
-			if err := publishCompletePartialFile(r, opt, sum, cr.Total); err != nil {
+			if err := resume.complete(r, cr.Total); err != nil {
 				return resp, err
 			}
-			markWholeFile(&resp, r.Header, cr.Total)
+			setWholeFile(&resp, r.Header, cr.Total)
 			return resp, nil
 		}
 	}
@@ -633,9 +560,9 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	// A resumed download appends to the partial file, so a partial response
 	// must continue the file exactly where it ends. Any other successful
 	// response carries the whole representation and starts the partial file again.
-	var resumed *response.ContentRange
+	var continued *response.ContentRange
 	expected := int64(-1)
-	if opt.Range.IsResume && r.StatusCode < http.StatusMultipleChoices {
+	if resume != nil && r.StatusCode < http.StatusMultipleChoices {
 		// Resume offsets describe the saved representation. Decoding an
 		// encoded response would leave a prefix that cannot safely use its
 		// validator or byte offsets, even on the first request or a restart.
@@ -643,11 +570,11 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 			return resp, fmt.Errorf("%w: resumable download requires an unencoded response", ErrRangeMismatch)
 		}
 		if r.StatusCode == http.StatusPartialContent {
-			cr, err := resumeRange(r, opt.Range)
+			cr, err := resume.parseRange(r)
 			if err != nil {
 				return resp, err
 			}
-			resumed = cr
+			continued = cr
 			expected = cr.End - cr.Start + 1
 		} else {
 			opt.Range.IsSet = false
@@ -662,14 +589,14 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 	var digest *checksum
 	if !opt.SkipDigestCheck && !r.Uncompressed {
-		digest = serverDigest(r, resumed != nil)
+		digest = serverDigest(r, continued != nil)
 	}
 
 	// A resumed download is checked as a whole file, so the bytes already in
 	// the partial file are hashed first.
 	for _, c := range []*checksum{sum, digest} {
-		if c != nil && resumed != nil {
-			if err := c.hashPartialFile(opt.ResponseWriter.FilePath, resumed.Start); err != nil {
+		if c != nil && continued != nil {
+			if err := c.hashPartialFile(opt.ResponseWriter.FilePath, continued.Start); err != nil {
 				return resp, err
 			}
 		}
@@ -708,9 +635,9 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	// Progress on a resumed download covers the whole file: the bytes already
 	// on disk count, and the total is the length of the representation.
-	if onDownload != nil && resumed != nil {
-		totalSize = resumed.Total
-		report, offset := onDownload, resumed.Start
+	if onDownload != nil && continued != nil {
+		totalSize = continued.Total
+		report, offset := onDownload, continued.Start
 		onDownload = func(current, total int64) {
 			report(offset+current, total)
 		}
@@ -759,7 +686,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	// A range with an unknown total is taken to run to the end, as requested.
-	incomplete := resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total
+	incomplete := continued != nil && continued.Total >= 0 && continued.End+1 < continued.Total
 	for _, c := range []*checksum{sum, digest} {
 		if copyErr == nil && c != nil && !incomplete {
 			copyErr = c.check()
@@ -792,7 +719,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		case incomplete:
 			closeErr = w.Close()
 			copyErr = fmt.Errorf("%w: the partial file has %d of %d bytes; resume again to continue",
-				ErrDownloadIncomplete, resumed.End+1, resumed.Total)
+				ErrDownloadIncomplete, continued.End+1, continued.Total)
 		default:
 			closeErr = w.Publish()
 		}
@@ -834,16 +761,16 @@ func checkVersion(h http.Header, etag, modified string) error {
 	if got := h.Get("ETag"); got != "" && etag != "" && got != etag {
 		return fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, got, etag)
 	}
-	if got := h.Get("Last-Modified"); got != "" && modified != "" && !sameTime(got, modified) {
+	if got := h.Get("Last-Modified"); got != "" && modified != "" && !equalDates(got, modified) {
 		return fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, got, modified)
 	}
 	return nil
 }
 
-// markWholeFile presents resp as a response that delivered the whole file of
+// setWholeFile sets resp to describe a response that delivered the whole file of
 // total bytes, with the status 200 OK and header h. It removes the headers
 // that describe only one range of the file.
-func markWholeFile(resp *response.Response, h http.Header, total int64) {
+func setWholeFile(resp *response.Response, h http.Header, total int64) {
 	resp.Status = strconv.Itoa(http.StatusOK) + " " + http.StatusText(http.StatusOK)
 	resp.StatusCode = http.StatusOK
 	resp.ContentLength = total
@@ -853,77 +780,6 @@ func markWholeFile(resp *response.Response, h http.Header, total int64) {
 	resp.Header.Del("Content-Range")
 	resp.Header.Del("Content-Digest")
 	resp.Header.Set("Content-Length", strconv.FormatInt(total, 10))
-}
-
-// publishCompletePartialFile publishes a partial file that already holds the
-// whole file of total bytes. Its resume asked for a range past its end with a
-// strong If-Range validator, so the server compared the range with the version
-// the partial file holds (RFC 9110, section 13.1.5), and answered 416 with the
-// file's size.
-//
-// A response that names another version fails and keeps the partial file. A
-// file smaller than the partial file shows that the partial file is not a copy
-// of it, so the partial file is removed and the next resume starts again. The
-// checksum set with SetChecksum, when there is one, must match before the
-// partial file is published.
-func publishCompletePartialFile(r *http.Response, opt *options.Option, sum *checksum, total int64) error {
-	if err := checkVersion(r.Header, opt.Range.ETag, opt.Range.LastModified); err != nil {
-		return err
-	}
-	dest := opt.ResponseWriter.FilePath
-	if total < opt.Range.Start {
-		mismatch := fmt.Errorf("%w: the partial file has %d bytes, the file has %d; resume again to start again",
-			ErrRangeMismatch, opt.Range.Start, total)
-		if err := os.Remove(options.PartialPath(dest)); err != nil {
-			return errors.Join(mismatch, fmt.Errorf("failed to remove partial file: %w", err))
-		}
-		return mismatch
-	}
-
-	writer, err := opt.InitialiseWriter()
-	if err != nil {
-		return fmt.Errorf("failed to initialise writer: %w", err)
-	}
-	partial, ok := writer.(*options.PartialWriter)
-	if !ok {
-		return errors.Join(fmt.Errorf("resumed download has writer %T, want a partial file", writer), writer.Close())
-	}
-	if sum != nil {
-		if err := sum.hashPartialFile(dest, total); err != nil {
-			return errors.Join(err, partial.Close())
-		}
-		if err := sum.check(); err != nil {
-			// Any byte of the partial file can be wrong, so remove it all.
-			return errors.Join(err, partial.Remove())
-		}
-	}
-	return partial.Publish()
-}
-
-// resumeRange returns the range of a partial response to a resumed download.
-// It returns an error wrapping ErrRangeMismatch unless the response has a valid
-// bytes Content-Range that starts at the end of the partial file, and belongs
-// to the representation the file holds: no content encoding, and no ETag or
-// Last-Modified value that differs from the response that started the file.
-func resumeRange(r *http.Response, rc options.RangeConfig) (*response.ContentRange, error) {
-	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
-		return nil, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
-	}
-	if err := checkVersion(r.Header, rc.ETag, rc.LastModified); err != nil {
-		return nil, err
-	}
-
-	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrRangeMismatch, err)
-	}
-	if cr.Unit != "bytes" {
-		return nil, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
-	}
-	if cr.Start != rc.Start {
-		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, rc.Start)
-	}
-	return cr, nil
 }
 
 // checkRangeLength returns an error wrapping ErrRangeMismatch when the body
@@ -943,9 +799,9 @@ func checkRangeLength(body io.Reader, written, expected int64) error {
 	return nil
 }
 
-// sameTime reports whether two HTTP dates name the same time. Values that do
+// equalDates reports whether two HTTP dates name the same time. Values that do
 // not parse are compared as text.
-func sameTime(a, b string) bool {
+func equalDates(a, b string) bool {
 	ta, errA := http.ParseTime(a)
 	tb, errB := http.ParseTime(b)
 	if errA != nil || errB != nil {

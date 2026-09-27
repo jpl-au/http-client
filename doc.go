@@ -14,7 +14,7 @@
 //
 // # Configuring Requests
 //
-// Use [options.Option] to customize requests with headers, compression,
+// Use [options.Option] to customise requests with headers, compression,
 // redirects, and progress tracking:
 //
 //	opt := options.New().

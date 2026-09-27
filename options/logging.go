@@ -64,9 +64,9 @@ func (opt *Option) UseTextLogger() *Option {
 	return opt
 }
 
-// UseJsonLogger configures the Option to use a JSON-based logger and enables verbose logging.
+// UseJSONLogger configures the Option to use a JSON-based logger and enables verbose logging.
 // The logger will output to stdout using the default slog JSONHandler format.
-func (opt *Option) UseJsonLogger() *Option {
+func (opt *Option) UseJSONLogger() *Option {
 	opt.mu.Lock()
 	opt.Logging.Enabled = true
 	opt.explicit |= settingLogging | settingLogger

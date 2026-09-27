@@ -20,7 +20,7 @@ func defaultRedirectConfig() RedirectConfig {
 	}
 }
 
-// Redirects configures HTTP redirect behavior.
+// Redirects configures HTTP redirect behaviour.
 // enabled - whether to follow redirects
 // max - maximum number of redirects to follow (the default of 10 if 0)
 func (opt *Option) Redirects(enabled bool, max int) *Option {

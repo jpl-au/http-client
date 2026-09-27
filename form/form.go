@@ -24,11 +24,14 @@ type Form struct {
 	parts    []part
 }
 
-// part is a field, or a file read from its path when the form is sent.
+// part is a field, or a file read from its path when the form is sent. A file
+// part has its header and size when the form checks its files before sending.
 type part struct {
-	name  string
-	value string // The field's value, or the file's path.
-	file  bool
+	name   string
+	value  string // The field's value, or the file's path.
+	file   bool
+	header textproto.MIMEHeader
+	size   int64
 }
 
 // New returns an empty Form.
@@ -64,7 +67,7 @@ func (f *Form) Len() (int64, error) {
 		return 0, err
 	}
 	var n counter
-	err = f.write(&n, parts, func(_ io.Writer, p planned) error {
+	err = f.write(&n, parts, func(_ io.Writer, p part) error {
 		n += counter(p.size)
 		return nil
 	})
@@ -88,18 +91,12 @@ func (f *Form) Reader() io.ReadCloser {
 	return pr
 }
 
-// planned is a part as it is sent: a file part also has its header and size.
-type planned struct {
-	part
-	header textproto.MIMEHeader
-	size   int64
-}
-
-// plan checks each file and returns the parts with their headers and sizes.
-func (f *Form) plan() ([]planned, error) {
-	parts := make([]planned, len(f.parts))
+// plan checks each file and returns a copy of the parts with the header and
+// size of each file part.
+func (f *Form) plan() ([]part, error) {
+	parts := make([]part, len(f.parts))
 	for i, p := range f.parts {
-		parts[i].part = p
+		parts[i] = p
 		if !p.file {
 			continue
 		}
@@ -136,7 +133,7 @@ func fileHeader(p part) (_ textproto.MIMEHeader, _ int64, err error) {
 }
 
 // write encodes the parts to w. body writes the content of each file part.
-func (f *Form) write(w io.Writer, parts []planned, body func(io.Writer, planned) error) error {
+func (f *Form) write(w io.Writer, parts []part, body func(io.Writer, part) error) error {
 	mw := f.writer(w)
 	for _, p := range parts {
 		if !p.file {
@@ -167,8 +164,8 @@ func (f *Form) writer(w io.Writer) *multipart.Writer {
 }
 
 // copyFile writes the content of the file part p to w, and returns an error
-// wrapping ErrFileChanged when the file no longer has the planned size.
-func copyFile(w io.Writer, p planned) (err error) {
+// wrapping ErrFileChanged when the file no longer has the size plan found.
+func copyFile(w io.Writer, p part) (err error) {
 	file, err := os.Open(p.value)
 	if err != nil {
 		return fmt.Errorf("form file %q: %w", p.name, err)
