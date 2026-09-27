@@ -73,7 +73,7 @@ func (w *FileWriter) Discard() error {
 // PartialWriter writes a resumed download to its partial file (see PartialPath).
 // Close keeps the partial file so a later Resume can continue it. Discard
 // removes the bytes this response added. Publish renames the complete partial
-// file to the destination.
+// file to the destination. Remove removes the whole partial file.
 type PartialWriter struct {
 	*os.File
 	path   string
@@ -87,6 +87,12 @@ func (w *PartialWriter) Discard() error {
 		return errors.Join(err, w.File.Close())
 	}
 	return w.File.Close()
+}
+
+// Remove closes and removes the whole partial file, so the next resume starts
+// again.
+func (w *PartialWriter) Remove() error {
+	return errors.Join(w.File.Close(), os.Remove(w.Name()))
 }
 
 // Publish closes the partial file and renames it to the destination.

@@ -284,6 +284,23 @@ if errors.Is(err, client.ErrStalled) {
 
 The timer restarts each time data is sent or received, so a large download is not cancelled while data is still arriving. A context deadline is different: it limits the time for the whole request. The timer also runs while the server prepares its reply, so set a time longer than the server needs to start replying. `SetStallTimeout(0)` removes a limit, for example one set in a client's global options.
 
+## Checksums
+
+`SetChecksum` checks a download against a checksum you already have, such as one published next to the file. Pass the function that creates the hash and the checksum as hex, as tools like `sha256sum` print it:
+
+```go
+opt := options.New().
+    SetFileOutput("/path/file.zip").
+    SetChecksum(sha256.New, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+resp, err := client.Get(url, opt)
+if errors.Is(err, client.ErrChecksumMismatch) {
+    // The download did not match, and /path/file.zip was not changed
+}
+```
+
+The checksum covers the body as it is saved, after decompression. A file download that does not match leaves the destination as it was, and a download to memory that does not match leaves the response body empty. For a resumed download, the checksum covers the whole file and is checked when the file is complete. If the complete file does not match, its partial file is removed, so the next resume starts again from the beginning. Error responses, such as a 404, are not checked. A checksum that is not valid hex fails the request before it is sent. `SetChecksum(nil, "")` removes a checksum.
+
 ---
 
 ## Reusable Client

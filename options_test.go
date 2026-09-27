@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"log/slog"
 	"net"
 	"net/http"
@@ -261,7 +262,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetTransport(&http.Transport{}).
 			SetProtocolScheme("https").
 			SetMaxBodySize(1024).
-			SetStallTimeout(time.Second)
+			SetStallTimeout(time.Second).
+			SetChecksum(sha256.New, "00")
 	}
 
 	t.Run("default source keeps the settings", func(t *testing.T) {
@@ -289,6 +291,9 @@ func TestMergeResetSetters(t *testing.T) {
 		if dest.StallTimeout != time.Second {
 			t.Errorf("StallTimeout = %v, want %v", dest.StallTimeout, time.Second)
 		}
+		if dest.Checksum.New == nil || dest.Checksum.Expected != "00" {
+			t.Errorf("Checksum = %+v, want sha256.New and %q", dest.Checksum, "00")
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -300,7 +305,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetTransport(nil).
 			SetProtocolScheme("").
 			SetMaxBodySize(0).
-			SetStallTimeout(0))
+			SetStallTimeout(0).
+			SetChecksum(nil, ""))
 
 		if dest.Context != nil {
 			t.Errorf("Context = %v, want nil", dest.Context)
@@ -322,6 +328,9 @@ func TestMergeResetSetters(t *testing.T) {
 		}
 		if dest.StallTimeout != 0 {
 			t.Errorf("StallTimeout = %v, want 0", dest.StallTimeout)
+		}
+		if dest.Checksum.New != nil || dest.Checksum.Expected != "" {
+			t.Errorf("Checksum = %+v, want none", dest.Checksum)
 		}
 	})
 }

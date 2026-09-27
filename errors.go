@@ -44,4 +44,8 @@ var (
 	// ErrStalled is returned when no data is sent or received for longer than
 	// the timeout set with Option.SetStallTimeout.
 	ErrStalled = errors.New("request stalled")
+
+	// ErrChecksumMismatch is returned when a downloaded body does not match
+	// the checksum set with Option.SetChecksum.
+	ErrChecksumMismatch = errors.New("checksum does not match")
 )

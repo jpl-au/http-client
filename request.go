@@ -101,6 +101,11 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 	resp.URL = url
 
+	sum, err := newChecksum(opt.Checksum)
+	if err != nil {
+		return resp, err
+	}
+
 	if opt.Range.IsResume {
 		releasePartial, err := claimPartialFile(opt.ResponseWriter.FilePath)
 		if err != nil {
@@ -166,7 +171,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 
 	// Process final response
-	return processResponse(httpResp, resp, opt, start)
+	return processResponse(httpResp, resp, opt, start, sum)
 }
 
 // partialFiles holds the partial files that resumed downloads in this process
@@ -566,7 +571,7 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 
 // processResponse handles the final response processing including decompression
 // and body reading.
-func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time) (response.Response, error) {
+func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time, sum *checksum) (response.Response, error) {
 	defer r.Body.Close()
 
 	// Record what was received before reading the body, so a response that
@@ -602,6 +607,18 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 			expected = cr.End - cr.Start + 1
 		} else {
 			opt.Range.IsSet = false
+		}
+	}
+
+	// A checksum describes the requested resource, so an error response is
+	// not checked. A resumed download is checked as a whole file, so the
+	// bytes already in the partial file are hashed first.
+	if r.StatusCode >= http.StatusMultipleChoices {
+		sum = nil
+	}
+	if sum != nil && resumed != nil {
+		if err := sum.hashPartialFile(opt.ResponseWriter.FilePath, resumed.Start); err != nil {
+			return resp, err
 		}
 	}
 
@@ -658,6 +675,9 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	if limited {
 		reader = io.LimitReader(reader, opt.MaxBodySize+1)
 	}
+	if sum != nil {
+		reader = io.TeeReader(reader, sum.hash)
+	}
 
 	var written int64
 	var copyErr error
@@ -675,6 +695,12 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		copyErr = fmt.Errorf("%w: body is longer than %d bytes", ErrBodyTooLarge, opt.MaxBodySize)
 	}
 
+	// A range with an unknown total is taken to run to the end, as requested.
+	incomplete := resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total
+	if copyErr == nil && sum != nil && !incomplete {
+		copyErr = sum.check()
+	}
+
 	var closeErr error
 	switch w := writer.(type) {
 	case *options.FileWriter:
@@ -686,16 +712,19 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 			closeErr = w.Close()
 		}
 	case *options.PartialWriter:
-		// A resumed download is published only when it is complete. A range
-		// with an unknown total is taken to run to the end, as requested.
-		// A response that failed validation is removed from the partial file.
-		// Otherwise the partial file keeps what arrived for the next resume.
+		// A resumed download is published only when it is complete. A response
+		// that failed validation is removed from the partial file. A complete
+		// file that fails its checksum is removed whole, because any of its
+		// bytes can be wrong. Otherwise the partial file keeps what arrived
+		// for the next resume.
 		switch {
 		case errors.Is(copyErr, ErrRangeMismatch):
 			closeErr = w.Discard()
+		case errors.Is(copyErr, ErrChecksumMismatch):
+			closeErr = w.Remove()
 		case copyErr != nil:
 			closeErr = w.Close()
-		case resumed != nil && resumed.Total >= 0 && resumed.End+1 < resumed.Total:
+		case incomplete:
 			closeErr = w.Close()
 			copyErr = fmt.Errorf("%w: the partial file has %d of %d bytes; resume again to continue",
 				ErrDownloadIncomplete, resumed.End+1, resumed.Total)

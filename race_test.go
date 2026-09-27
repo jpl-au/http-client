@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -185,6 +186,7 @@ func TestOptionMethodsRace(t *testing.T) {
 			for range raceIterations {
 				opt.SetContext(context.Background())
 				opt.SetStallTimeout(time.Second)
+				opt.SetChecksum(sha256.New, "00")
 			}
 		})
 

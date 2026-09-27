@@ -51,6 +51,7 @@ type Option struct {
 	ResponseWriter  ResponseWriter    // Define the type of response writer
 	MaxBodySize     int64             // Maximum size in bytes of a response body held in memory. Zero or less means no limit.
 	StallTimeout    time.Duration     // Longest time a request may go with no data sent or received. Zero or less means no limit.
+	Checksum        ChecksumConfig    // Checksum a downloaded body must match
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
 	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
@@ -80,6 +81,7 @@ const (
 	settingScheme
 	settingMaxBodySize
 	settingStallTimeout
+	settingChecksum
 )
 
 // has reports whether s includes setting.
@@ -440,6 +442,9 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.StallTimeout != 0 || src.explicit.has(settingStallTimeout) {
 		opt.StallTimeout = src.StallTimeout
 	}
+	if src.Checksum.New != nil || src.explicit.has(settingChecksum) {
+		opt.Checksum = src.Checksum
+	}
 
 	// Merge compression config
 	if src.Compression.Type != CompressionNone || src.explicit.has(settingCompression) {
@@ -560,6 +565,7 @@ func (opt *Option) Clone() *Option {
 	clone.ResponseWriter = opt.ResponseWriter
 	clone.MaxBodySize = opt.MaxBodySize
 	clone.StallTimeout = opt.StallTimeout
+	clone.Checksum = opt.Checksum
 	clone.File = opt.File
 	clone.Range = opt.Range
 
