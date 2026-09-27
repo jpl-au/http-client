@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
@@ -61,6 +62,38 @@ func TestNormaliseURL(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	})
+
+	// A host with a port and no scheme, such as localhost:8080, gets the scheme
+	// too, although net/url alone reads its host as a scheme.
+	t.Run("no scheme with port uses https", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
+
+		c := client.NewCustom(server.Client())
+		resp, err := c.Get(strings.TrimPrefix(server.URL, "https://"))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	})
+
+	t.Run("no scheme with port uses set scheme", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
+		port := strings.TrimPrefix(server.URL, "http://127.0.0.1")
+
+		for _, host := range []string{"127.0.0.1", "localhost"} {
+			resp, err := client.Get(host+port, options.New().SetProtocolScheme("http"))
+			if err != nil {
+				t.Fatalf("Get(%q) error = %v", host+port, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Get(%q) StatusCode = %d, want %d", host+port, resp.StatusCode, http.StatusOK)
+			}
 		}
 	})
 

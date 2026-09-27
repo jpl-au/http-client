@@ -20,25 +20,21 @@ func normaliseURL(rawURL string, protocolScheme string) (string, error) {
 		protocolScheme = strings.TrimSuffix(protocolScheme, "://")
 	}
 
-	// Try parsing the URL as-is first
-	parsed, err := netURL.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
-	}
-
-	// Handle URLs without a scheme (net/url parses "example.com" as path, not host)
-	if parsed.Scheme == "" {
-		// No scheme present - add one and reparse
+	// Add the scheme before parsing. net/url reads a URL without one as a
+	// path, and reads a host with a port, such as localhost:8080, as a scheme.
+	if !strings.Contains(rawURL, "://") {
 		scheme := "https"
 		if protocolScheme != "" {
 			scheme = protocolScheme
 		}
 		rawURL = scheme + "://" + rawURL
-		parsed, err = netURL.Parse(rawURL)
-		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
-		}
-	} else if protocolScheme != "" && parsed.Scheme != protocolScheme {
+	}
+
+	parsed, err := netURL.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
+	}
+	if protocolScheme != "" && parsed.Scheme != protocolScheme {
 		// Scheme exists but protocolScheme override requested
 		parsed.Scheme = protocolScheme
 	}
