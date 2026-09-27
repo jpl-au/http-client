@@ -379,3 +379,95 @@ func TestSegmentedDownloadIgnoresResume(t *testing.T) {
 		t.Errorf("Range headers = %q, want one request with no range", got)
 	}
 }
+
+// TestSegmentedDownloadDateValidatorChanged checks that a download whose first
+// response has a date validator fails when a later segment comes from a
+// version with another Last-Modified, even from a server that ignores If-Range.
+func TestSegmentedDownloadDateValidatorChanged(t *testing.T) {
+	older := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	changed := bytes.Repeat([]byte("changed "), largefile.Len()/8)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Ignoring If-Range sends a range of whichever version is current.
+		r.Header.Del("If-Range")
+		content, modified := largefile.Bytes(), older
+		if requests.Add(1) > 1 {
+			content, modified = changed, older.Add(time.Hour)
+		}
+		http.ServeContent(w, r, "", modified, bytes.NewReader(content))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := client.Get(server.URL, options.New().SetFileOutput(path).SetSegments(4))
+	if !errors.Is(err, client.ErrRangeMismatch) {
+		t.Fatalf("Get() error = %v, want %v", err, client.ErrRangeMismatch)
+	}
+	if got := contentOrAbsent(t, path); got != "old" {
+		t.Errorf("destination = %q, want %q", got, "old")
+	}
+	onlyFile(t, dir, "download.bin")
+}
+
+// decodedTransport marks responses as decoded by the transport, as a transport
+// that decompresses bodies does, when decoded reports true for the request.
+type decodedTransport struct {
+	decoded func(r *http.Request) bool
+}
+
+func (d decodedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err == nil && d.decoded(r) {
+		resp.Uncompressed = true
+	}
+	return resp, err
+}
+
+// TestSegmentedDownloadTransportDecoded checks that decoded bytes are never
+// accepted as byte ranges of the file: a decoded first response is downloaded
+// again in one request, and a decoded later segment fails the download.
+func TestSegmentedDownloadTransportDecoded(t *testing.T) {
+	tests := []struct {
+		name    string
+		decoded func(r *http.Request) bool
+		wantErr error
+	}{
+		{"first response", func(r *http.Request) bool { return strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") }, nil},
+		{"later segment", func(r *http.Request) bool {
+			return r.Header.Get("Range") != "" && !strings.HasPrefix(r.Header.Get("Range"), "bytes=0-")
+		}, client.ErrRangeMismatch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newSegmentServer(t, segmentConfig{content: same(largefile.Bytes()), etag: same(`"v1"`)})
+			c := client.NewCustom(&http.Client{Transport: decodedTransport{decoded: tt.decoded}})
+			dir := t.TempDir()
+			path := filepath.Join(dir, "download.bin")
+			if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := c.Get(server.URL, options.New().SetFileOutput(path).SetSegments(4))
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if got := contentOrAbsent(t, path); got != "old" {
+					t.Errorf("destination = %q, want %q", got, "old")
+				}
+				onlyFile(t, dir, "download.bin")
+				return
+			}
+			if got := server.requests(); len(got) != 2 || got[1] != "" {
+				t.Errorf("Range headers = %q, want a first request and one request with no range", got)
+			}
+			if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, largefile.Bytes()) {
+				t.Errorf("file does not match the content served (error %v)", err)
+			}
+		})
+	}
+}

@@ -1,11 +1,13 @@
 package options
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
-
-	"github.com/jpl-au/http-client/internal/contenttype"
 )
 
 // FileConfig holds file upload metadata.
@@ -118,10 +120,31 @@ func (opt *Option) inferContentType(file *os.File, fileInfo os.FileInfo) error {
 		return nil
 	}
 
-	contentType, err := contenttype.Detect(file, fileInfo.Name())
+	contentType, err := DetectContentType(file, fileInfo.Name())
 	if err != nil {
 		return err
 	}
 	opt.AddHeader("Content-Type", contentType)
 	return nil
+}
+
+// DetectContentType returns the content type of the file r named name, as a
+// file upload or form file sends it. The file name's extension decides when it
+// has a known type. Otherwise the first 512 bytes decide, as
+// http.DetectContentType reads them. DetectContentType leaves r at its start.
+func DetectContentType(r io.ReadSeeker, name string) (string, error) {
+	if byExtension := mime.TypeByExtension(filepath.Ext(name)); byExtension != "" {
+		return byExtension, nil
+	}
+
+	// An empty file reads io.EOF at once and still has a type.
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return http.DetectContentType(buf[:n]), nil
 }

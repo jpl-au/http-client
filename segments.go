@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jpl-au/http-client/internal/validator"
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
 )
@@ -43,13 +42,18 @@ func downloadSegments(client *http.Client, first *http.Response, resp response.R
 		return processResponse(first, resp, opt, start, sum)
 	}
 
+	// Bytes the transport decoded are not byte ranges of the file.
+	if first.Uncompressed {
+		return downloadWhole(client, first, resp, opt, start, sum)
+	}
+
 	resp.PopulateResponse(first, start)
 	cr, err := segmentRange(first, 0, -1, -1)
 	if err != nil {
 		first.Body.Close()
 		return resp, err
 	}
-	tag := validator.Strong(first.Header)
+	tag := options.StrongValidator(first.Header)
 	if tag == "" || cr.Total < 0 {
 		return downloadWhole(client, first, resp, opt, start, sum)
 	}
@@ -136,7 +140,7 @@ func fetchSegments(client *http.Client, first *http.Response, tag string, cr *re
 	})
 	for _, s := range splitSegments(cr.End+1, cr.Total, opt.Segments-1) {
 		wg.Go(func() {
-			fail(fetchSegment(ctx, client, first.Request, tag, s[0], s[1], cr.Total, file, progress, opt))
+			fail(fetchSegment(ctx, client, first, tag, s[0], s[1], cr.Total, file, progress, opt))
 		})
 	}
 	wg.Wait()
@@ -166,10 +170,11 @@ func splitSegments(from, total int64, n int) [][2]int64 {
 }
 
 // fetchSegment downloads the bytes from first to last of the version tag into
-// file. A response that is not that range of that version fails with an error
-// wrapping ErrRangeMismatch.
-func fetchSegment(ctx context.Context, client *http.Client, template *http.Request, tag string, first, last, total int64, file *os.File, progress *segmentProgress, opt *options.Option) error {
-	req := template.Clone(ctx)
+// file. The request repeats the request of the response origin. A response
+// that is not that range of the version of origin fails with an error wrapping
+// ErrRangeMismatch.
+func fetchSegment(ctx context.Context, client *http.Client, origin *http.Response, tag string, first, last, total int64, file *os.File, progress *segmentProgress, opt *options.Option) error {
+	req := origin.Request.Clone(ctx)
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(first, 10)+"-"+strconv.FormatInt(last, 10))
 	req.Header.Set("If-Range", tag)
 	r, err := client.Do(req)
@@ -183,9 +188,12 @@ func fetchSegment(ctx context.Context, client *http.Client, template *http.Reque
 	case r.StatusCode != http.StatusPartialContent:
 		r.Body.Close()
 		return fmt.Errorf("segment %d-%d failed: %s", first, last, r.Status)
-	case r.Header.Get("ETag") != "" && r.Header.Get("ETag") != tag:
+	}
+	// A server that ignores If-Range sends a range of whichever version is
+	// current, so compare every validator the responses carry.
+	if err := sameVersion(r.Header, origin.Header); err != nil {
 		r.Body.Close()
-		return fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, r.Header.Get("ETag"), tag)
+		return err
 	}
 	if _, err := segmentRange(r, first, last, total); err != nil {
 		r.Body.Close()
@@ -194,10 +202,27 @@ func fetchSegment(ctx context.Context, client *http.Client, template *http.Reque
 	return writeSegment(r, first, last, file, progress, opt)
 }
 
+// sameVersion returns an error wrapping ErrRangeMismatch when a segment's
+// header names another version than the first response's header: a different
+// ETag or a different Last-Modified. A validator only one of them has is not
+// compared.
+func sameVersion(segment, first http.Header) error {
+	if a, b := segment.Get("ETag"), first.Get("ETag"); a != "" && b != "" && a != b {
+		return fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, a, b)
+	}
+	if a, b := segment.Get("Last-Modified"), first.Get("Last-Modified"); a != "" && b != "" && !sameTime(a, b) {
+		return fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, a, b)
+	}
+	return nil
+}
+
 // segmentRange returns the range of a segment response, and an error wrapping
 // ErrRangeMismatch unless the response is unencoded and holds bytes first to
 // last of total. A last or total of -1 accepts any value.
 func segmentRange(r *http.Response, first, last, total int64) (*response.ContentRange, error) {
+	if r.Uncompressed {
+		return nil, fmt.Errorf("%w: the transport decoded the segment", ErrRangeMismatch)
+	}
 	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("%w: segment has content encoding %q", ErrRangeMismatch, encoding)
 	}

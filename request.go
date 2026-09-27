@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -702,9 +703,10 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	// A buffered body is held in memory, so it must not exceed the limit.
-	// Reading one byte past the limit shows whether the body is longer.
+	// Reading one byte past the limit shows whether the body is longer. No body
+	// can be longer than the largest limit, and one more byte would overflow.
 	_, buffered := writer.(*options.WriteCloserBuffer)
-	limited := buffered && opt.MaxBodySize > 0
+	limited := buffered && opt.MaxBodySize > 0 && opt.MaxBodySize < math.MaxInt64
 	if limited {
 		reader = io.LimitReader(reader, opt.MaxBodySize+1)
 	}

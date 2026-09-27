@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -510,5 +511,19 @@ func TestMaxBodySizeLimitsErrorBodyOfFileDownload(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Stat() error = %v, want %v (no file for an error response)", err, fs.ErrNotExist)
+	}
+}
+
+// TestMaxBodySizeLargestLimit checks that the largest limit does not overflow
+// and cut the body short.
+func TestMaxBodySizeLargestLimit(t *testing.T) {
+	server := newBodyServer(t, http.StatusOK, "hello")
+
+	resp, err := client.Get(server.URL, options.New().SetMaxBodySize(math.MaxInt64))
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got := resp.String(); got != "hello" {
+		t.Errorf("String() = %q, want %q", got, "hello")
 	}
 }

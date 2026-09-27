@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jpl-au/http-client/internal/contenttype"
+	"github.com/jpl-au/http-client/options"
 )
 
 // ErrFileChanged is returned when a file's size changes between the check
@@ -125,7 +125,7 @@ func fileHeader(p part) (_ textproto.MIMEHeader, _ int64, err error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	contentType, err := contenttype.Detect(file, p.value)
+	contentType, err := options.DetectContentType(file, p.value)
 	if err != nil {
 		return nil, 0, err
 	}
