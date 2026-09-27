@@ -17,9 +17,9 @@ type stallWatch struct {
 	timeout time.Duration
 }
 
-// watchStall returns a context derived from parent, and the stallWatch that
+// newStallWatch returns a context derived from parent, and the stallWatch that
 // cancels it. The time starts at once.
-func watchStall(parent context.Context, timeout time.Duration) (context.Context, *stallWatch) {
+func newStallWatch(parent context.Context, timeout time.Duration) (context.Context, *stallWatch) {
 	ctx, cancel := context.WithCancelCause(parent)
 	w := &stallWatch{ctx: ctx, cancel: cancel, timeout: timeout}
 	w.timer = time.AfterFunc(timeout, func() { cancel(ErrStalled) })

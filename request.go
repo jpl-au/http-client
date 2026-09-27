@@ -77,7 +77,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		if parent == nil {
 			parent = context.Background()
 		}
-		ctx, watch := watchStall(parent, opt.StallTimeout)
+		ctx, watch := newStallWatch(parent, opt.StallTimeout)
 		opt.Context = ctx
 		next := client.Transport
 		if next == nil {
@@ -191,7 +191,8 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 
 	if split {
-		return downloadSegments(client, template, httpResp, resp, opt, start, sum)
+		d := &segmentedDownload{client: client, template: template, opt: opt, sum: sum, start: start}
+		return d.finish(httpResp, resp)
 	}
 
 	// Process final response
