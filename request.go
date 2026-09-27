@@ -159,6 +159,14 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	opt.Log("sending request", "url", logURL.String(), "method", method, "headers", slices.Sorted(maps.Keys(req.Header)))
 	resp.RequestTime = time.Now().Unix()
 
+	// net/http adds the cookie jar's cookies to the request it sends, and
+	// adds them again to each new request. Later requests of a segmented
+	// download repeat a copy taken before that.
+	var template *http.Request
+	if split {
+		template = req.Clone(req.Context())
+	}
+
 	httpResp, err := client.Do(req)
 	if err != nil {
 		// When a redirect policy rejects a redirect, Do also returns the
@@ -183,7 +191,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 
 	if split {
-		return downloadSegments(client, httpResp, resp, opt, start, sum)
+		return downloadSegments(client, template, httpResp, resp, opt, start, sum)
 	}
 
 	// Process final response

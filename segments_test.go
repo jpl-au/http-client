@@ -6,7 +6,9 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +28,7 @@ type segmentServer struct {
 	*httptest.Server
 	mu          sync.Mutex
 	ranges      []string // Range header of each request, in order.
+	cookies     []string // Cookie header of each request, in order.
 	inFlight    atomic.Int32
 	maxInFlight atomic.Int32
 }
@@ -44,6 +47,7 @@ func newSegmentServer(t *testing.T, cfg segmentConfig) *segmentServer {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.ranges = append(s.ranges, r.Header.Get("Range"))
+		s.cookies = append(s.cookies, r.Header.Get("Cookie"))
 		n := len(s.ranges)
 		s.mu.Unlock()
 
@@ -348,8 +352,8 @@ func TestSegmentedDownloadAfterRedirect(t *testing.T) {
 	if _, err := client.Get(origin.URL, opt); err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if got := originRequests.Load(); got != 1 {
-		t.Errorf("origin received %d requests, want 1", got)
+	if got := originRequests.Load(); got != 4 {
+		t.Errorf("origin received %d requests, want 4, because each segment follows the redirect", got)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -503,4 +507,49 @@ func TestSegmentedDownloadWholeFallbackRejectsRange(t *testing.T) {
 		t.Errorf("destination = %q, want %q", got, "old")
 	}
 	onlyFile(t, dir, "download.bin")
+}
+
+// TestSegmentedDownloadSendsJarCookiesOnce checks that each request of a
+// segmented download sends the cookie jar's cookies once, including the
+// request for the whole file when the first response cannot be split.
+func TestSegmentedDownloadSendsJarCookiesOnce(t *testing.T) {
+	tests := []struct {
+		name     string
+		etag     func(int) string
+		requests int
+	}{
+		{"segments", same(`"v1"`), 4},
+		{"whole-file request", same(""), 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newSegmentServer(t, segmentConfig{content: same(largefile.Bytes()), etag: tt.etag})
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jar.SetCookies(u, []*http.Cookie{{Name: "session", Value: "abc"}})
+			c := client.NewCustom(&http.Client{Jar: jar})
+			path := filepath.Join(t.TempDir(), "download.bin")
+
+			if _, err := c.Get(server.URL, options.New().SetFileOutput(path).SetSegments(4)); err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			server.mu.Lock()
+			cookies := slices.Clone(server.cookies)
+			server.mu.Unlock()
+			if len(cookies) != tt.requests {
+				t.Errorf("server received %d requests, want %d", len(cookies), tt.requests)
+			}
+			for i, cookie := range cookies {
+				if cookie != "session=abc" {
+					t.Errorf("request %d sent Cookie %q, want %q", i+1, cookie, "session=abc")
+				}
+			}
+		})
+	}
 }

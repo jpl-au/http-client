@@ -241,7 +241,10 @@ func (opt *Option) HasRange() bool {
 // come from one version of the file, so the file is downloaded again in one
 // request. Every other segment asks for the version of the first response,
 // and a download fails with an error that wraps client.ErrRangeMismatch when
-// the file changes on the server. Each segment has at least 1 MiB.
+// the file changes on the server. Each segment has at least 1 MiB. Every
+// segment is requested from the original address, so after a redirect each
+// segment follows the redirect again, with net/http's rules for headers and
+// cookies.
 //
 // The segments are written to a temporary file that replaces the destination
 // only when every segment is complete, so a failed download leaves the

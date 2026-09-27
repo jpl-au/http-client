@@ -32,19 +32,23 @@ func segmented(method string, opt *options.Option) bool {
 // first request, which asked for the first segment. A response that is not a
 // range continues as an ordinary download. A range with no strong validator,
 // or no known size, is downloaded again in one request.
-func downloadSegments(client *http.Client, first *http.Response, resp response.Response, opt *options.Option, start time.Time, sum *checksum) (response.Response, error) {
+//
+// Every later request repeats template, the first request as it was before
+// net/http sent it. Each one goes to the original address, so net/http
+// applies its redirect rules and adds the cookie jar's cookies once.
+func downloadSegments(client *http.Client, template *http.Request, first *http.Response, resp response.Response, opt *options.Option, start time.Time, sum *checksum) (response.Response, error) {
 	switch first.StatusCode {
 	case http.StatusPartialContent:
 	case http.StatusRequestedRangeNotSatisfiable:
 		// An empty file has no first byte to ask for.
-		return downloadWhole(client, first, resp, opt, start, sum)
+		return downloadWhole(client, template, first, resp, opt, start, sum)
 	default:
 		return processResponse(first, resp, opt, start, sum)
 	}
 
 	// Bytes the transport decoded are not byte ranges of the file.
 	if first.Uncompressed {
-		return downloadWhole(client, first, resp, opt, start, sum)
+		return downloadWhole(client, template, first, resp, opt, start, sum)
 	}
 
 	resp.PopulateResponse(first, start)
@@ -55,7 +59,7 @@ func downloadSegments(client *http.Client, first *http.Response, resp response.R
 	}
 	tag := options.StrongValidator(first.Header)
 	if tag == "" || cr.Total < 0 {
-		return downloadWhole(client, first, resp, opt, start, sum)
+		return downloadWhole(client, template, first, resp, opt, start, sum)
 	}
 
 	writer, err := opt.InitialiseWriter()
@@ -69,7 +73,7 @@ func downloadSegments(client *http.Client, first *http.Response, resp response.R
 		return resp, errors.Join(fmt.Errorf("segmented download has writer %T, want a file", writer), writer.Close())
 	}
 
-	err = fetchSegments(client, first, tag, cr, file.File, opt)
+	err = fetchSegments(client, template, first, tag, cr, file.File, opt)
 	for _, c := range []*checksum{sum, wholeDigest(first, opt)} {
 		if err == nil && c != nil {
 			err = c.hashFile(file.Name())
@@ -99,12 +103,12 @@ func downloadSegments(client *http.Client, first *http.Response, resp response.R
 }
 
 // downloadWhole closes the first response and downloads the whole file in one
-// request to the address the first request reached.
-func downloadWhole(client *http.Client, first *http.Response, resp response.Response, opt *options.Option, start time.Time, sum *checksum) (response.Response, error) {
+// request that repeats template without its range.
+func downloadWhole(client *http.Client, template *http.Request, first *http.Response, resp response.Response, opt *options.Option, start time.Time, sum *checksum) (response.Response, error) {
 	if err := first.Body.Close(); err != nil {
 		opt.Log("failed to close first segment", "error", err)
 	}
-	req := first.Request.Clone(first.Request.Context())
+	req := template.Clone(template.Context())
 	req.Header.Del("Range")
 	r, err := client.Do(req)
 	if err != nil {
@@ -116,7 +120,7 @@ func downloadWhole(client *http.Client, first *http.Response, resp response.Resp
 // fetchSegments writes the first response and the rest of the file, in
 // segments that download at the same time, to file. The first error cancels
 // the other segments.
-func fetchSegments(client *http.Client, first *http.Response, tag string, cr *response.ContentRange, file *os.File, opt *options.Option) error {
+func fetchSegments(client *http.Client, template *http.Request, first *http.Response, tag string, cr *response.ContentRange, file *os.File, opt *options.Option) error {
 	if err := file.Truncate(cr.Total); err != nil {
 		first.Body.Close()
 		return fmt.Errorf("failed to size segmented download: %w", err)
@@ -140,7 +144,7 @@ func fetchSegments(client *http.Client, first *http.Response, tag string, cr *re
 	})
 	for _, s := range splitSegments(cr.End+1, cr.Total, opt.Segments-1) {
 		wg.Go(func() {
-			fail(fetchSegment(ctx, client, first, tag, s[0], s[1], cr.Total, file, progress, opt))
+			fail(fetchSegment(ctx, client, template, first.Header, tag, s[0], s[1], cr.Total, file, progress, opt))
 		})
 	}
 	wg.Wait()
@@ -170,11 +174,11 @@ func splitSegments(from, total int64, n int) [][2]int64 {
 }
 
 // fetchSegment downloads the bytes from first to last of the version tag into
-// file. The request repeats the request of the response origin. A response
-// that is not that range of the version of origin fails with an error wrapping
-// ErrRangeMismatch.
-func fetchSegment(ctx context.Context, client *http.Client, origin *http.Response, tag string, first, last, total int64, file *os.File, progress *segmentProgress, opt *options.Option) error {
-	req := origin.Request.Clone(ctx)
+// file, with a request that repeats template. A response that is not that
+// range of the version the first response's header names fails with an error
+// wrapping ErrRangeMismatch.
+func fetchSegment(ctx context.Context, client *http.Client, template *http.Request, firstHeader http.Header, tag string, first, last, total int64, file *os.File, progress *segmentProgress, opt *options.Option) error {
+	req := template.Clone(ctx)
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(first, 10)+"-"+strconv.FormatInt(last, 10))
 	req.Header.Set("If-Range", tag)
 	r, err := client.Do(req)
@@ -191,7 +195,7 @@ func fetchSegment(ctx context.Context, client *http.Client, origin *http.Respons
 	}
 	// A server that ignores If-Range sends a range of whichever version is
 	// current, so compare every validator the responses carry.
-	if err := sameVersion(r.Header, origin.Header); err != nil {
+	if err := sameVersion(r.Header, firstHeader); err != nil {
 		r.Body.Close()
 		return err
 	}

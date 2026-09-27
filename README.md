@@ -271,6 +271,7 @@ The first request asks for the first 1 MiB, and the server's reply gives the fil
 - A server that does not support range requests sends the whole file in its first reply, and the download finishes as one request.
 - A reply with no strong validator, such as an `ETag`, cannot prove that all segments come from one version of the file, so the file is downloaded again in one request.
 - If any segment fails, the other segments stop and the destination is left as it was.
+- Every segment is requested from the original address. After a redirect, each segment follows the redirect again, so Go's rules for sending headers and cookies to another host apply to every segment.
 - Progress adds up all segments, and the progress callback never runs twice at the same time.
 - `SetChecksum` and a server's `Repr-Digest` are checked against the whole file.
 - The response describes the whole file, with the status `200 OK`.
