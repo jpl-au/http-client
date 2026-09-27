@@ -703,46 +703,66 @@ func TestOption_Resume(t *testing.T) {
 
 	// A partial file that already holds the whole file is published. Its
 	// resume asks for a range past the end, and the server answers 416 with
-	// the file's size.
-	t.Run("complete partial file published", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// the file's size. Publishing reports the whole file as progress, so a
+	// progress display reaches the end.
+	t.Run("complete partial file", func(t *testing.T) {
+		// http.ServeContent leaves the ETag out of its 416, so the version is
+		// compared only with a 416 the server writes itself.
+		served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"v1"`)
 			http.ServeContent(w, r, "", time.Time{}, strings.NewReader("abcdef"))
 		}))
-		defer server.Close()
+		defer served.Close()
+		sameVersion := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("ETag", `"v1"`)
+			w.Header().Set("Content-Range", "bytes */6")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		}))
+		defer sameVersion.Close()
 
 		tests := []struct {
 			name        string
+			server      *httptest.Server
 			checksum    string
 			wantErr     error
 			wantFile    string
 			wantPartial string
 		}{
-			{"no checksum", "", nil, "abcdef", absent},
-			{"matching checksum", sha256Hex("abcdef"), nil, "abcdef", absent},
-			{"different checksum", sha256Hex("other"), client.ErrChecksumMismatch, absent, absent},
+			{"no checksum", served, "", nil, "abcdef", absent},
+			{"matching checksum", served, sha256Hex("abcdef"), nil, "abcdef", absent},
+			{"different checksum", served, sha256Hex("other"), client.ErrChecksumMismatch, absent, absent},
+			{"same version", sameVersion, "", nil, "abcdef", absent},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "download.bin")
 				writePartial(t, path, "abcdef")
-				opt := options.New().Resume(path, etag(`"v1"`))
+				var current, total int64
+				opt := options.New().Resume(path, etag(`"v1"`)).OnDownloadProgress(func(c, tot int64) {
+					current, total = c, tot
+				})
 				if tt.checksum != "" {
 					opt.SetChecksum(sha256.New, tt.checksum)
 				}
 
-				resp, err := client.Get(server.URL, opt)
+				resp, err := client.Get(tt.server.URL, opt)
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
-				}
-				if tt.wantErr == nil && resp.StatusCode != http.StatusOK {
-					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 				}
 				if got := contentOrAbsent(t, path); got != tt.wantFile {
 					t.Errorf("destination = %q, want %q", got, tt.wantFile)
 				}
 				if got := contentOrAbsent(t, options.PartialPath(path)); got != tt.wantPartial {
 					t.Errorf("partial file = %q, want %q", got, tt.wantPartial)
+				}
+				if tt.wantErr != nil {
+					return
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				if current != 6 || total != 6 {
+					t.Errorf("progress = %d of %d, want 6 of 6", current, total)
 				}
 			})
 		}

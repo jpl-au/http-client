@@ -551,6 +551,10 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 			if err := resume.complete(r, cr.Total); err != nil {
 				return resp, err
 			}
+			// No body is read, so report the whole file once.
+			if opt.Progress.OnDownload != nil {
+				opt.Progress.OnDownload(cr.Total, cr.Total)
+			}
 			setWholeFile(&resp, r.Header, cr.Total)
 			return resp, nil
 		}
