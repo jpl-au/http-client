@@ -263,6 +263,20 @@ func (opt *Option) SetFileOutput(filepath string) *Option {
 	return opt
 }
 
+// SetMaxBodySize limits a response body held in memory to size bytes. A longer
+// body fails the request with an error that wraps client.ErrBodyTooLarge. The
+// limit applies to the body after decompression, and to every buffered body,
+// including the body of an error response to a file download. A download
+// written to a file has no limit. A size of zero or less, the default, means
+// no limit.
+func (opt *Option) SetMaxBodySize(size int64) *Option {
+	opt.mu.Lock()
+	opt.MaxBodySize = size
+	opt.explicit |= settingMaxBodySize
+	opt.mu.Unlock()
+	return opt
+}
+
 // SetBufferOutput configures the response writer to write responses to an in-memory buffer.
 func (opt *Option) SetBufferOutput() *Option {
 	opt.mu.Lock()

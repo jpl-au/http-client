@@ -31,4 +31,8 @@ var (
 	// body again but the payload is a reader that can only be read once. Use []byte,
 	// string, *bytes.Buffer, a file, or a seekable reader to follow such redirects.
 	ErrPayloadNotReplayable = errors.New("payload cannot be replayed for redirect")
+
+	// ErrBodyTooLarge is returned when a response body held in memory is longer
+	// than the limit set with Option.SetMaxBodySize.
+	ErrBodyTooLarge = errors.New("response body too large")
 )

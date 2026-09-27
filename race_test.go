@@ -102,6 +102,7 @@ func TestOptionMethodsRace(t *testing.T) {
 			for range raceIterations {
 				opt.SetTransport(&http.Transport{})
 				opt.SetMaxResponseHeaderBytes(1024)
+				opt.SetMaxBodySize(1024)
 				opt.SetProtocol(options.HTTP1)
 				opt.SetProtocolScheme("https://")
 			}

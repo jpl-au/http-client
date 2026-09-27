@@ -256,7 +256,8 @@ func TestMergeResetSetters(t *testing.T) {
 			OnUploadProgress(func(int64, int64) {}).
 			OnDownloadProgress(func(int64, int64) {}).
 			SetTransport(&http.Transport{}).
-			SetProtocolScheme("https")
+			SetProtocolScheme("https").
+			SetMaxBodySize(1024)
 	}
 
 	t.Run("default source keeps the settings", func(t *testing.T) {
@@ -278,6 +279,9 @@ func TestMergeResetSetters(t *testing.T) {
 		if dest.Transport.Scheme != "https://" {
 			t.Errorf("Transport.Scheme = %q, want %q", dest.Transport.Scheme, "https://")
 		}
+		if dest.MaxBodySize != 1024 {
+			t.Errorf("MaxBodySize = %d, want 1024", dest.MaxBodySize)
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -287,7 +291,8 @@ func TestMergeResetSetters(t *testing.T) {
 			OnUploadProgress(nil).
 			OnDownloadProgress(nil).
 			SetTransport(nil).
-			SetProtocolScheme(""))
+			SetProtocolScheme("").
+			SetMaxBodySize(0))
 
 		if dest.Context != nil {
 			t.Errorf("Context = %v, want nil", dest.Context)
@@ -303,6 +308,9 @@ func TestMergeResetSetters(t *testing.T) {
 		}
 		if dest.Transport.Scheme != "" {
 			t.Errorf("Transport.Scheme = %q, want \"\"", dest.Transport.Scheme)
+		}
+		if dest.MaxBodySize != 0 {
+			t.Errorf("MaxBodySize = %d, want 0", dest.MaxBodySize)
 		}
 	})
 }

@@ -218,6 +218,21 @@ resp, err := client.Get(url, opt)
 
 The body is written to a temporary file beside the destination and renamed into place only when it has arrived in full, so a failed download leaves the destination as it was. A replaced file keeps its permissions, and a new file follows the process umask. Only a 2xx response is written to the file. Any other response is returned in the response buffer with no error, so check `resp.StatusCode`.
 
+## Limiting Buffered Responses
+
+A body held in memory has no size limit by default. Set one to protect against unexpectedly large responses:
+
+```go
+opt := options.New().SetMaxBodySize(10 << 20) // 10 MiB
+
+resp, err := client.Get(url, opt)
+if errors.Is(err, client.ErrBodyTooLarge) {
+    // The body was longer than 10 MiB and resp.Body is empty
+}
+```
+
+The limit applies to the body after decompression, and to the error response body of a file download. A body written to a file has no limit. `SetMaxBodySize(0)` removes a limit, for example one set in a client's global options.
+
 ---
 
 ## Reusable Client

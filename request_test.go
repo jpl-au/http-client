@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -409,5 +410,105 @@ func TestFailedResponseRecordsTiming(t *testing.T) {
 	}
 	if resp.ProcessedTime == 0 {
 		t.Error("ProcessedTime = 0, want a timestamp for a failed response")
+	}
+}
+
+// TestMaxBodySize checks that a buffered body longer than the limit fails with
+// ErrBodyTooLarge and leaves the response body empty.
+func TestMaxBodySize(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	exact := "Hello from path: /exact"
+	tests := []struct {
+		name    string
+		path    string
+		limit   int64
+		wantErr error
+	}{
+		{"over the limit", "/download", 1 << 20, client.ErrBodyTooLarge},
+		{"at the limit", "/exact", int64(len(exact)), nil},
+		{"decompressed body over the limit", "/download/compressed?compression=gzip", 1 << 20, client.ErrBodyTooLarge},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := client.Get(server.URL+tt.path, options.New().SetMaxBodySize(tt.limit))
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
+			}
+			if !errors.Is(resp.Error, tt.wantErr) {
+				t.Errorf("Response.Error = %v, want %v", resp.Error, tt.wantErr)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if tt.wantErr != nil && !resp.Body.IsEmpty() {
+				t.Errorf("body has %d bytes, want none", resp.Body.Len())
+			}
+			if tt.wantErr == nil && resp.String() != exact {
+				t.Errorf("String() = %q, want %q", resp.String(), exact)
+			}
+		})
+	}
+}
+
+// TestMaxBodySizeLeavesFileOutput checks that the limit applies only to a body
+// held in memory, not to a download written to a file.
+func TestMaxBodySizeLeavesFileOutput(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "download.txt")
+	_, err := client.Get(server.URL+"/download", options.New().SetMaxBodySize(1024).SetFileOutput(path))
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got, want := info.Size(), int64(largefile.Len()); got != want {
+		t.Errorf("file size = %d, want %d", got, want)
+	}
+}
+
+// TestClientMaxBodySize checks that a Client applies a global limit, and that a
+// per-request SetMaxBodySize(0) removes it.
+func TestClientMaxBodySize(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	c := client.New(options.New().SetMaxBodySize(1024))
+	if _, err := c.Get(server.URL + "/download"); !errors.Is(err, client.ErrBodyTooLarge) {
+		t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
+	}
+
+	resp, err := c.Get(server.URL+"/download", options.New().SetMaxBodySize(0))
+	if err != nil {
+		t.Fatalf("Get() with SetMaxBodySize(0) error = %v", err)
+	}
+	if got, want := resp.Body.Len(), largefile.Len(); got != want {
+		t.Errorf("body has %d bytes, want %d", got, want)
+	}
+}
+
+// TestMaxBodySizeLimitsErrorBodyOfFileDownload checks that the limit applies to
+// the body of an error response to a file download, which is held in memory.
+func TestMaxBodySizeLimitsErrorBodyOfFileDownload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 2048))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "download.txt")
+	_, err := client.Get(server.URL, options.New().SetMaxBodySize(1024).SetFileOutput(path))
+	if !errors.Is(err, client.ErrBodyTooLarge) {
+		t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat() error = %v, want %v (no file for an error response)", err, fs.ErrNotExist)
 	}
 }

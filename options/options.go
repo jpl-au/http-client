@@ -48,6 +48,7 @@ type Option struct {
 	Transport       TransportConfig   // Transport and protocol settings
 	File            FileConfig        // File upload metadata
 	ResponseWriter  ResponseWriter    // Define the type of response writer
+	MaxBodySize     int64             // Maximum size in bytes of a response body held in memory. Zero or less means no limit.
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
 	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
@@ -75,6 +76,7 @@ const (
 	settingDownloadProgress
 	settingTransport
 	settingScheme
+	settingMaxBodySize
 )
 
 // has reports whether s includes setting.
@@ -412,6 +414,9 @@ func (opt *Option) Merge(src *Option) *Option {
 	if (src.ResponseWriter.Type != "" && src.ResponseWriter.Type != WriteToBuffer) || src.explicit.has(settingOutput) {
 		opt.ResponseWriter = src.ResponseWriter
 	}
+	if src.MaxBodySize != 0 || src.explicit.has(settingMaxBodySize) {
+		opt.MaxBodySize = src.MaxBodySize
+	}
 
 	// Merge compression config
 	if src.Compression.Type != CompressionNone || src.explicit.has(settingCompression) {
@@ -530,6 +535,7 @@ func (opt *Option) Clone() *Option {
 	clone.Transport = opt.Transport
 	clone.Context = opt.Context
 	clone.ResponseWriter = opt.ResponseWriter
+	clone.MaxBodySize = opt.MaxBodySize
 	clone.File = opt.File
 	clone.Range = opt.Range
 

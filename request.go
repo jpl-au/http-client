@@ -578,6 +578,14 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		reader = io.LimitReader(body, expected)
 	}
 
+	// A buffered body is held in memory, so it must not exceed the limit.
+	// Reading one byte past the limit shows whether the body is longer.
+	_, buffered := writer.(*options.WriteCloserBuffer)
+	limited := buffered && opt.MaxBodySize > 0
+	if limited {
+		reader = io.LimitReader(reader, opt.MaxBodySize+1)
+	}
+
 	var written int64
 	var copyErr error
 	if opt.Progress.DownloadBufferSize != nil {
@@ -589,6 +597,9 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 	if copyErr == nil && expected >= 0 {
 		copyErr = checkRangeLength(body, written, expected)
+	}
+	if copyErr == nil && limited && written > opt.MaxBodySize {
+		copyErr = fmt.Errorf("%w: body is longer than %d bytes", ErrBodyTooLarge, opt.MaxBodySize)
 	}
 
 	var closeErr error
