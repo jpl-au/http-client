@@ -553,3 +553,72 @@ func TestSegmentedDownloadSendsJarCookiesOnce(t *testing.T) {
 		})
 	}
 }
+
+// TestSegmentedDownloadKeepsFirstResponseOnFailure checks that when the first
+// response cannot be split and the request for the whole file then fails, the
+// response still records the first response.
+func TestSegmentedDownloadKeepsFirstResponseOnFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("X-First", "yes")
+			w.Header().Set("Content-Range", "bytes */0")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		// Close the connection without a response, so the request fails.
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "download.bin")
+
+	resp, err := client.Get(server.URL, options.New().SetFileOutput(path).SetSegments(4))
+	if err == nil {
+		t.Fatal("Get() error = nil, want error")
+	}
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusRequestedRangeNotSatisfiable)
+	}
+	if got := resp.Header.Get("X-First"); got != "yes" {
+		t.Errorf("Header.Get(%q) = %q, want %q", "X-First", got, "yes")
+	}
+}
+
+// TestSegmentedDownloadRecordsRejectedRedirect checks that when a redirect
+// policy stops the request for the whole file, the response records the
+// redirect the client received, as it does for any other request.
+func TestSegmentedDownloadRecordsRejectedRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Range") != "":
+			w.Header().Set("Content-Range", "bytes */0")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		case r.URL.Path == "/":
+			http.Redirect(w, r, "/a", http.StatusFound)
+		case r.URL.Path == "/a":
+			w.Header().Set("X-Hop", "a")
+			http.Redirect(w, r, "/b", http.StatusFound)
+		default:
+			_, _ = w.Write([]byte("content"))
+		}
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "download.bin")
+
+	opt := options.New().SetFileOutput(path).SetSegments(4).EnableRedirects().SetMaxRedirects(1)
+	resp, err := client.Get(server.URL, opt)
+	if !errors.Is(err, client.ErrMaxRedirectsExceeded) {
+		t.Fatalf("Get() error = %v, want %v", err, client.ErrMaxRedirectsExceeded)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Header.Get("X-Hop"); got != "a" {
+		t.Errorf("Header.Get(%q) = %q, want %q", "X-Hop", got, "a")
+	}
+}

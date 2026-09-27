@@ -119,8 +119,11 @@ func (d *segmentedDownload) finish(first *http.Response, resp response.Response)
 }
 
 // fetchFile closes the first response and fetches the whole file in one
-// request, which repeats the template without its range.
+// request, which repeats the template without its range. The response records
+// the first response until the new one replaces it, so a request that fails
+// still returns what the server sent.
 func (d *segmentedDownload) fetchFile(first *http.Response, resp response.Response) (response.Response, error) {
+	resp.PopulateResponse(first, d.start)
 	if err := first.Body.Close(); err != nil {
 		d.opt.Log("failed to close first segment", "error", err)
 	}
@@ -128,6 +131,11 @@ func (d *segmentedDownload) fetchFile(first *http.Response, resp response.Respon
 	req.Header.Del("Range")
 	r, err := d.client.Do(req)
 	if err != nil {
+		// When a redirect policy rejects a redirect, Do also returns the
+		// redirect response, with its body already closed.
+		if r != nil {
+			resp.PopulateResponse(r, d.start)
+		}
 		return resp, err
 	}
 	return processResponse(r, resp, d.opt, d.start, d.sum)
