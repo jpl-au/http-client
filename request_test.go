@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,159 +22,258 @@ import (
 	"github.com/jpl-au/http-client/response"
 )
 
-func TestBasicRequests(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
+func TestMethods(t *testing.T) {
+	t.Run("standard methods", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-	tests := []struct {
-		name           string
-		method         string
-		path           string
-		expectedStatus int
-	}{
-		{"GET Request", http.MethodGet, "/", http.StatusOK},
-		{"POST Request", http.MethodPost, "/", http.StatusOK},
-		{"PUT Request", http.MethodPut, "/", http.StatusOK},
-		{"DELETE Request", http.MethodDelete, "/", http.StatusOK},
-	}
+		tests := []struct {
+			name           string
+			method         string
+			path           string
+			expectedStatus int
+		}{
+			{"get", http.MethodGet, "/", http.StatusOK},
+			{"post", http.MethodPost, "/", http.StatusOK},
+			{"put", http.MethodPut, "/", http.StatusOK},
+			{"delete", http.MethodDelete, "/", http.StatusOK},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := client.Custom(tt.method, server.URL+tt.path, nil)
-			if err != nil {
-				t.Errorf("Custom() error = %v", err)
-			}
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
-			}
-			if err != nil {
-				t.Logf("err: %s", err)
-			}
-		})
-	}
-}
-
-func TestPostUpload(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	tests := []struct {
-		name    string
-		payload func(t *testing.T) any
-	}{
-		{"File", func(t *testing.T) any {
-			file, err := os.Open(smallf)
-			if err != nil {
-				t.Fatalf("Open(%q) error = %v", smallf, err)
-			}
-			t.Cleanup(func() { file.Close() })
-			return file
-		}},
-		{"String", func(t *testing.T) any { return smallfile.String() }},
-		{"Bytes", func(t *testing.T) any { return smallfile.Bytes() }},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var lastProgress float64
-			opt := options.New()
-			opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-				if totalBytes > 0 {
-					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := client.Custom(tt.method, server.URL+tt.path, nil)
+				if err != nil {
+					t.Errorf("Custom() error = %v", err)
 				}
-			}
-
-			resp, err := client.Post(server.URL+"/upload", tt.payload(t), opt)
-			if err != nil {
-				t.Fatalf("Post() error = %v", err)
-			}
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-			}
-			if lastProgress != 100 {
-				t.Errorf("upload progress = %v, want 100", lastProgress)
-			}
-			if !bytes.Equal(resp.Body.Bytes(), smallfile.Bytes()) {
-				t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), smallfile.Len())
-			}
-		})
-	}
-}
-
-func TestFileFuncUpload(t *testing.T) {
-	var err error
-	var resp response.Response
-
-	server := setupTestServer(t)
-	defer server.Close()
-
-	tests := []struct {
-		name           string
-		method         string
-		expectedStatus int
-	}{
-		{"PostFile Request", http.MethodPost, http.StatusOK},
-		{"PutFile Request", http.MethodPut, http.StatusOK},
-		{"PatchFile Request", http.MethodPatch, http.StatusOK},
-	}
-
-	url := server.URL + "/upload"
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-
-			// Track upload progress
-			var lastProgress float64
-			opt := options.New()
-			opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
-				if totalBytes > 0 {
-					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				if resp.StatusCode != tt.expectedStatus {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, tt.expectedStatus)
 				}
-			}
+				if err != nil {
+					t.Logf("err: %s", err)
+				}
+			})
+		}
+	})
 
-			switch tt.method {
-			case http.MethodPost:
-				resp, err = client.PostFile(url, largef, opt)
-			case http.MethodPut:
-				resp, err = client.PutFile(url, largef, opt)
-			case http.MethodPatch:
-				resp, err = client.PatchFile(url, largef, opt)
-			}
+	t.Run("custom method sends payload", func(t *testing.T) {
+		var method, body string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, _ := io.ReadAll(r.Body)
+			method, body = r.Method, string(data)
+		}))
+		defer server.Close()
 
+		for _, m := range []string{"PROPFIND", http.MethodDelete} {
+			_, err := client.Custom(m, server.URL, "payload")
 			if err != nil {
-				t.Errorf("upload error = %v", err)
+				t.Fatalf("Custom(%q) error = %v", m, err)
 			}
-
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			if method != m {
+				t.Errorf("method = %q, want %q", method, m)
 			}
-			if lastProgress != 100 {
-				t.Errorf("upload progress = %v, want 100", lastProgress)
+			if body != "payload" {
+				t.Errorf("%s request body = %q, want %q", m, body, "payload")
 			}
-			if !bytes.Equal(resp.Body.Bytes(), largefile.Bytes()) {
-				t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), largefile.Len())
-			}
-		})
-	}
+		}
+	})
 }
 
-func TestCustomHeaders(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
+func TestPayloads(t *testing.T) {
+	t.Run("post", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-	opt := options.New()
-	opt.AddHeader("X-Custom-Header", "test-value")
+		tests := []struct {
+			name    string
+			payload func(t *testing.T) any
+		}{
+			{"file", func(t *testing.T) any {
+				file, err := os.Open(smallf)
+				if err != nil {
+					t.Fatalf("Open(%q) error = %v", smallf, err)
+				}
+				t.Cleanup(func() { file.Close() })
+				return file
+			}},
+			{"string", func(t *testing.T) any { return smallfile.String() }},
+			{"bytes", func(t *testing.T) any { return smallfile.Bytes() }},
+		}
 
-	resp, err := client.Get(server.URL+"/echo-headers", opt)
-	if err != nil {
-		t.Errorf("Get() error = %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if got, want := resp.Header.Get("Echo-X-Custom-Header"), "test-value"; got != want {
-		t.Errorf("Header.Get(%q) = %q, want %q", "Echo-X-Custom-Header", got, want)
-	}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var lastProgress float64
+				opt := options.New()
+				opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
+					if totalBytes > 0 {
+						lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+					}
+				}
+
+				resp, err := client.Post(server.URL+"/upload", tt.payload(t), opt)
+				if err != nil {
+					t.Fatalf("Post() error = %v", err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				if lastProgress != 100 {
+					t.Errorf("upload progress = %v, want 100", lastProgress)
+				}
+				if !bytes.Equal(resp.Body.Bytes(), smallfile.Bytes()) {
+					t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), smallfile.Len())
+				}
+			})
+		}
+	})
+
+	t.Run("file functions", func(t *testing.T) {
+		var err error
+		var resp response.Response
+
+		server := setupTestServer(t)
+		defer server.Close()
+
+		tests := []struct {
+			name           string
+			method         string
+			expectedStatus int
+		}{
+			{"post file", http.MethodPost, http.StatusOK},
+			{"put file", http.MethodPut, http.StatusOK},
+			{"patch file", http.MethodPatch, http.StatusOK},
+		}
+
+		url := server.URL + "/upload"
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+
+				// Track upload progress
+				var lastProgress float64
+				opt := options.New()
+				opt.Progress.OnUpload = func(bytesRead, totalBytes int64) {
+					if totalBytes > 0 {
+						lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+					}
+				}
+
+				switch tt.method {
+				case http.MethodPost:
+					resp, err = client.PostFile(url, largef, opt)
+				case http.MethodPut:
+					resp, err = client.PutFile(url, largef, opt)
+				case http.MethodPatch:
+					resp, err = client.PatchFile(url, largef, opt)
+				}
+
+				if err != nil {
+					t.Errorf("upload error = %v", err)
+				}
+
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				if lastProgress != 100 {
+					t.Errorf("upload progress = %v, want 100", lastProgress)
+				}
+				if !bytes.Equal(resp.Body.Bytes(), largefile.Bytes()) {
+					t.Errorf("body does not match: got %d bytes, want %d bytes", resp.Body.Len(), largefile.Len())
+				}
+			})
+		}
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		var received []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			received, _ = io.ReadAll(r.Body)
+		}))
+		defer server.Close()
+
+		path := filepath.Join(t.TempDir(), "empty.txt")
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+
+		resp, err := client.PostFile(server.URL, path)
+		if err != nil {
+			t.Fatalf("PostFile() error = %v, want nil for an empty file", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if len(received) != 0 {
+			t.Errorf("received body length = %d, want 0", len(received))
+		}
+	})
+
+	// A url.Values payload is sent URL-encoded, with its content type and
+	// repeated keys, by every method that takes a payload.
+	t.Run("form values", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Echo-Content-Type", r.Header.Get("Content-Type"))
+			w.Header().Set("Echo-X-Custom", r.Header.Get("X-Custom"))
+			_, _ = w.Write([]byte(r.PostForm.Encode()))
+		}))
+		defer server.Close()
+
+		values := url.Values{"name": {"Ada"}, "tag": {"a", "b"}}
+		c := client.New()
+		tests := []struct {
+			name string
+			send func(url string, payload any, opts ...*options.Option) (response.Response, error)
+		}{
+			{"post", client.Post},
+			{"put", client.Put},
+			{"patch", client.Patch},
+			{"client post", c.Post},
+			{"client put", c.Put},
+			{"client patch", c.Patch},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := tt.send(server.URL, values, options.New().AddHeader("X-Custom", "yes"))
+				if err != nil {
+					t.Fatalf("send error = %v", err)
+				}
+				if got, want := resp.String(), values.Encode(); got != want {
+					t.Errorf("received form = %q, want %q", got, want)
+				}
+				if got, want := resp.Header.Get("Echo-Content-Type"), "application/x-www-form-urlencoded"; got != want {
+					t.Errorf("Content-Type = %q, want %q", got, want)
+				}
+				if got := resp.Header.Get("Echo-X-Custom"); got != "yes" {
+					t.Errorf("X-Custom = %q, want %q", got, "yes")
+				}
+			})
+		}
+	})
+}
+
+func TestHeaders(t *testing.T) {
+	t.Run("custom header", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
+
+		opt := options.New()
+		opt.AddHeader("X-Custom-Header", "test-value")
+
+		resp, err := client.Get(server.URL+"/echo-headers", opt)
+		if err != nil {
+			t.Errorf("Get() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got, want := resp.Header.Get("Echo-X-Custom-Header"), "test-value"; got != want {
+			t.Errorf("Header.Get(%q) = %q, want %q", "Echo-X-Custom-Header", got, want)
+		}
+	})
 }
 
 // roundTripFunc adapts a function to http.RoundTripper.
@@ -200,330 +300,291 @@ func (c *blockingCompressor) Close() error {
 	return nil
 }
 
-// TestFailedUploadReleasesCompressor checks that a failed request closes the
-// compression pipe even when upload progress wraps it.
-func TestFailedUploadReleasesCompressor(t *testing.T) {
-	compressor := &blockingCompressor{writing: make(chan struct{}), closed: make(chan struct{})}
+func TestFailedRequests(t *testing.T) {
+	// A failed request closes the compression pipe even when upload progress
+	// wraps it.
+	t.Run("upload releases compressor", func(t *testing.T) {
+		compressor := &blockingCompressor{writing: make(chan struct{}), closed: make(chan struct{})}
 
-	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		<-compressor.writing
-		r.Body.Close()
-		return nil, errors.New("synthetic transport failure")
+		transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			<-compressor.writing
+			r.Body.Close()
+			return nil, errors.New("synthetic transport failure")
+		})
+
+		opt := options.New().
+			SetClient(&http.Client{Transport: transport}).
+			SetCompression(options.CompressionCustom).
+			TrackAfterCompression().
+			OnUploadProgress(func(int64, int64) {})
+		opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
+			compressor.w = w
+			return compressor, nil
+		}
+
+		_, err := client.Post("http://example.invalid/upload", "payload", opt)
+		if err == nil {
+			t.Fatal("Post() error = nil, want error")
+		}
+
+		select {
+		case <-compressor.closed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the compressor is still blocked on the pipe after the request failed")
+		}
 	})
 
-	opt := options.New().
-		SetClient(&http.Client{Transport: transport}).
-		SetCompression(options.CompressionCustom).
-		TrackAfterCompression().
-		OnUploadProgress(func(int64, int64) {})
-	opt.Compression.Compressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
-		compressor.w = w
-		return compressor, nil
-	}
+	t.Run("keeps status and error", func(t *testing.T) {
+		invalidGzip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write([]byte("not gzip"))
+		}))
+		defer invalidGzip.Close()
 
-	_, err := client.Post("http://example.invalid/upload", "payload", opt)
-	if err == nil {
-		t.Fatal("Post() error = nil, want error")
-	}
+		truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+			conn.Close()
+		}))
+		defer truncated.Close()
 
-	select {
-	case <-compressor.closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the compressor is still blocked on the pipe after the request failed")
-	}
-}
-
-func TestResponseMetadataMatchesRequest(t *testing.T) {
-	var traceID string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceID = r.Header.Get("X-Trace-ID")
-		w.Header().Set("Content-Length", "3")
-		_, _ = w.Write([]byte("abc"))
-	}))
-	defer server.Close()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-
-	if traceID == "" {
-		t.Error("X-Trace-ID header = \"\", want an identifier")
-	}
-	if resp.UniqueIdentifier != traceID {
-		t.Errorf("UniqueIdentifier = %q, want %q (the X-Trace-ID header)", resp.UniqueIdentifier, traceID)
-	}
-	if resp.ContentLength != 3 {
-		t.Errorf("ContentLength = %d, want 3", resp.ContentLength)
-	}
-}
-
-func TestFailedResponseKeepsStatusAndError(t *testing.T) {
-	invalidGzip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "gzip")
-		_, _ = w.Write([]byte("not gzip"))
-	}))
-	defer invalidGzip.Close()
-
-	truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
+		tests := []struct {
+			name string
+			url  string
+			opt  *options.Option
+		}{
+			{"invalid gzip body", invalidGzip.URL, options.New().AddHeader("Accept-Encoding", "gzip")},
+			{"truncated body", truncated.URL, options.New()},
 		}
-		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
-		conn.Close()
-	}))
-	defer truncated.Close()
 
-	tests := []struct {
-		name string
-		url  string
-		opt  *options.Option
-	}{
-		{"invalid gzip body", invalidGzip.URL, options.New().AddHeader("Accept-Encoding", "gzip")},
-		{"truncated body", truncated.URL, options.New()},
-	}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := client.Get(tt.url, tt.opt)
+				if err == nil {
+					t.Fatal("Get() error = nil, want error")
+				}
+				if resp.Error != err {
+					t.Errorf("Response.Error = %v, want the returned error %v", resp.Error, err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d (the received status)", resp.StatusCode, http.StatusOK)
+				}
+			})
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := client.Get(tt.url, tt.opt)
+		t.Run("invalid url", func(t *testing.T) {
+			resp, err := client.Get("http://[::1")
 			if err == nil {
 				t.Fatal("Get() error = nil, want error")
 			}
 			if resp.Error != err {
 				t.Errorf("Response.Error = %v, want the returned error %v", resp.Error, err)
 			}
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("StatusCode = %d, want %d (the received status)", resp.StatusCode, http.StatusOK)
-			}
 		})
-	}
+	})
 
-	t.Run("invalid URL", func(t *testing.T) {
-		resp, err := client.Get("http://[::1")
+	t.Run("records timing", func(t *testing.T) {
+		const stall = 100 * time.Millisecond
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
+			time.Sleep(stall)
+			conn.Close()
+		}))
+		defer server.Close()
+
+		resp, err := client.Get(server.URL)
 		if err == nil {
 			t.Fatal("Get() error = nil, want error")
 		}
-		if resp.Error != err {
-			t.Errorf("Response.Error = %v, want the returned error %v", resp.Error, err)
+
+		if resp.AccessTime < stall {
+			t.Errorf("AccessTime = %v, want at least %v (the time spent reading the body)", resp.AccessTime, stall)
+		}
+		if resp.ProcessedTime == 0 {
+			t.Error("ProcessedTime = 0, want a timestamp for a failed response")
 		}
 	})
 }
 
-func TestLoggingRedactsCredentials(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer server.Close()
+func TestLogging(t *testing.T) {
+	t.Run("redacts credentials", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
 
-	var logs bytes.Buffer
-	opt := options.New().
-		SetLogger(slog.New(slog.NewTextHandler(&logs, nil))).
-		AddHeader("Authorization", "Bearer secret-token").
-		AddCookie(&http.Cookie{Name: "session", Value: "secret-cookie"})
+		var logs bytes.Buffer
+		opt := options.New().
+			SetLogger(slog.New(slog.NewTextHandler(&logs, nil))).
+			AddHeader("Authorization", "Bearer secret-token").
+			AddCookie(&http.Cookie{Name: "session", Value: "secret-cookie"})
 
-	url := strings.Replace(server.URL, "http://", "http://user:secret-password@", 1) + "/path?token=secret-query"
-	_, err := client.Get(url, opt)
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-
-	out := logs.String()
-	if !strings.Contains(out, "/path") {
-		t.Errorf("log = %q, want it to name the request path %q", out, "/path")
-	}
-	if !strings.Contains(out, "Authorization") {
-		t.Errorf("log = %q, want it to list the header name %q", out, "Authorization")
-	}
-	for _, secret := range []string{"secret-token", "secret-cookie", "secret-password", "secret-query"} {
-		if strings.Contains(out, secret) {
-			t.Errorf("log = %q, want %q redacted", out, secret)
-		}
-	}
-}
-
-func TestUploadEmptyFile(t *testing.T) {
-	var received []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received, _ = io.ReadAll(r.Body)
-	}))
-	defer server.Close()
-
-	path := filepath.Join(t.TempDir(), "empty.txt")
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	resp, err := client.PostFile(server.URL, path)
-	if err != nil {
-		t.Fatalf("PostFile() error = %v, want nil for an empty file", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if len(received) != 0 {
-		t.Errorf("received body length = %d, want 0", len(received))
-	}
-}
-
-func TestCustomMethodSendsPayload(t *testing.T) {
-	var method, body string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, _ := io.ReadAll(r.Body)
-		method, body = r.Method, string(data)
-	}))
-	defer server.Close()
-
-	for _, m := range []string{"PROPFIND", http.MethodDelete} {
-		_, err := client.Custom(m, server.URL, "payload")
+		url := strings.Replace(server.URL, "http://", "http://user:secret-password@", 1) + "/path?token=secret-query"
+		_, err := client.Get(url, opt)
 		if err != nil {
-			t.Fatalf("Custom(%q) error = %v", m, err)
+			t.Fatalf("Get() error = %v", err)
 		}
-		if method != m {
-			t.Errorf("method = %q, want %q", method, m)
+
+		out := logs.String()
+		if !strings.Contains(out, "/path") {
+			t.Errorf("log = %q, want it to name the request path %q", out, "/path")
 		}
-		if body != "payload" {
-			t.Errorf("%s request body = %q, want %q", m, body, "payload")
+		if !strings.Contains(out, "Authorization") {
+			t.Errorf("log = %q, want it to list the header name %q", out, "Authorization")
 		}
-	}
+		for _, secret := range []string{"secret-token", "secret-cookie", "secret-password", "secret-query"} {
+			if strings.Contains(out, secret) {
+				t.Errorf("log = %q, want %q redacted", out, secret)
+			}
+		}
+	})
 }
 
-func TestFailedResponseRecordsTiming(t *testing.T) {
-	const stall = 100 * time.Millisecond
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, err := w.(http.Hijacker).Hijack()
+func TestResponseMetadata(t *testing.T) {
+	t.Run("matches request", func(t *testing.T) {
+		var traceID string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			traceID = r.Header.Get("X-Trace-ID")
+			w.Header().Set("Content-Length", "3")
+			_, _ = w.Write([]byte("abc"))
+		}))
+		defer server.Close()
+
+		resp, err := client.Get(server.URL)
 		if err != nil {
-			t.Error(err)
-			return
+			t.Fatalf("Get() error = %v", err)
 		}
-		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
-		time.Sleep(stall)
-		conn.Close()
-	}))
-	defer server.Close()
 
-	resp, err := client.Get(server.URL)
-	if err == nil {
-		t.Fatal("Get() error = nil, want error")
-	}
-
-	if resp.AccessTime < stall {
-		t.Errorf("AccessTime = %v, want at least %v (the time spent reading the body)", resp.AccessTime, stall)
-	}
-	if resp.ProcessedTime == 0 {
-		t.Error("ProcessedTime = 0, want a timestamp for a failed response")
-	}
+		if traceID == "" {
+			t.Error("X-Trace-ID header = \"\", want an identifier")
+		}
+		if resp.UniqueIdentifier != traceID {
+			t.Errorf("UniqueIdentifier = %q, want %q (the X-Trace-ID header)", resp.UniqueIdentifier, traceID)
+		}
+		if resp.ContentLength != 3 {
+			t.Errorf("ContentLength = %d, want 3", resp.ContentLength)
+		}
+	})
 }
 
-// TestMaxBodySize checks that a buffered body longer than the limit fails with
-// ErrBodyTooLarge and leaves the response body empty.
-func TestMaxBodySize(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
+func TestOption_SetMaxBodySize(t *testing.T) {
+	// A buffered body longer than the limit fails with ErrBodyTooLarge and
+	// leaves the response body empty.
+	t.Run("buffered body", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-	exact := "Hello from path: /exact"
-	tests := []struct {
-		name    string
-		path    string
-		limit   int64
-		wantErr error
-	}{
-		{"over the limit", "/download", 1 << 20, client.ErrBodyTooLarge},
-		{"at the limit", "/exact", int64(len(exact)), nil},
-		{"decompressed body over the limit", "/download/compressed?compression=gzip", 1 << 20, client.ErrBodyTooLarge},
-	}
+		exact := "Hello from path: /exact"
+		tests := []struct {
+			name    string
+			path    string
+			limit   int64
+			wantErr error
+		}{
+			{"over the limit", "/download", 1 << 20, client.ErrBodyTooLarge},
+			{"at the limit", "/exact", int64(len(exact)), nil},
+			{"decompressed over the limit", "/download/compressed?compression=gzip", 1 << 20, client.ErrBodyTooLarge},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := client.Get(server.URL+tt.path, options.New().SetMaxBodySize(tt.limit))
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
-			}
-			if !errors.Is(resp.Error, tt.wantErr) {
-				t.Errorf("Response.Error = %v, want %v", resp.Error, tt.wantErr)
-			}
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
-			}
-			if tt.wantErr != nil && !resp.Body.IsEmpty() {
-				t.Errorf("body has %d bytes, want none", resp.Body.Len())
-			}
-			if tt.wantErr == nil && resp.String() != exact {
-				t.Errorf("String() = %q, want %q", resp.String(), exact)
-			}
-		})
-	}
-}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := client.Get(server.URL+tt.path, options.New().SetMaxBodySize(tt.limit))
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
+				}
+				if !errors.Is(resp.Error, tt.wantErr) {
+					t.Errorf("Response.Error = %v, want %v", resp.Error, tt.wantErr)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				if tt.wantErr != nil && !resp.Body.IsEmpty() {
+					t.Errorf("body has %d bytes, want none", resp.Body.Len())
+				}
+				if tt.wantErr == nil && resp.String() != exact {
+					t.Errorf("String() = %q, want %q", resp.String(), exact)
+				}
+			})
+		}
+	})
 
-// TestMaxBodySizeLeavesFileOutput checks that the limit applies only to a body
-// held in memory, not to a download written to a file.
-func TestMaxBodySizeLeavesFileOutput(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
+	// The limit applies only to a body held in memory, not to a download
+	// written to a file.
+	t.Run("file output unlimited", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-	path := filepath.Join(t.TempDir(), "download.txt")
-	_, err := client.Get(server.URL+"/download", options.New().SetMaxBodySize(1024).SetFileOutput(path))
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+		path := filepath.Join(t.TempDir(), "download.txt")
+		_, err := client.Get(server.URL+"/download", options.New().SetMaxBodySize(1024).SetFileOutput(path))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat() error = %v", err)
-	}
-	if got, want := info.Size(), int64(largefile.Len()); got != want {
-		t.Errorf("file size = %d, want %d", got, want)
-	}
-}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat() error = %v", err)
+		}
+		if got, want := info.Size(), int64(largefile.Len()); got != want {
+			t.Errorf("file size = %d, want %d", got, want)
+		}
+	})
 
-// TestClientMaxBodySize checks that a Client applies a global limit, and that a
-// per-request SetMaxBodySize(0) removes it.
-func TestClientMaxBodySize(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
+	// A Client applies a global limit, and a per-request SetMaxBodySize(0)
+	// removes it.
+	t.Run("client limit", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-	c := client.New(options.New().SetMaxBodySize(1024))
-	if _, err := c.Get(server.URL + "/download"); !errors.Is(err, client.ErrBodyTooLarge) {
-		t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
-	}
+		c := client.New(options.New().SetMaxBodySize(1024))
+		if _, err := c.Get(server.URL + "/download"); !errors.Is(err, client.ErrBodyTooLarge) {
+			t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
+		}
 
-	resp, err := c.Get(server.URL+"/download", options.New().SetMaxBodySize(0))
-	if err != nil {
-		t.Fatalf("Get() with SetMaxBodySize(0) error = %v", err)
-	}
-	if got, want := resp.Body.Len(), largefile.Len(); got != want {
-		t.Errorf("body has %d bytes, want %d", got, want)
-	}
-}
+		resp, err := c.Get(server.URL+"/download", options.New().SetMaxBodySize(0))
+		if err != nil {
+			t.Fatalf("Get() with SetMaxBodySize(0) error = %v", err)
+		}
+		if got, want := resp.Body.Len(), largefile.Len(); got != want {
+			t.Errorf("body has %d bytes, want %d", got, want)
+		}
+	})
 
-// TestMaxBodySizeLimitsErrorBodyOfFileDownload checks that the limit applies to
-// the body of an error response to a file download, which is held in memory.
-func TestMaxBodySizeLimitsErrorBodyOfFileDownload(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write(bytes.Repeat([]byte("x"), 2048))
-	}))
-	defer server.Close()
+	// The limit applies to the body of an error response to a file download,
+	// which is held in memory.
+	t.Run("error body of file download", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 2048))
+		}))
+		defer server.Close()
 
-	path := filepath.Join(t.TempDir(), "download.txt")
-	_, err := client.Get(server.URL, options.New().SetMaxBodySize(1024).SetFileOutput(path))
-	if !errors.Is(err, client.ErrBodyTooLarge) {
-		t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("Stat() error = %v, want %v (no file for an error response)", err, fs.ErrNotExist)
-	}
-}
+		path := filepath.Join(t.TempDir(), "download.txt")
+		_, err := client.Get(server.URL, options.New().SetMaxBodySize(1024).SetFileOutput(path))
+		if !errors.Is(err, client.ErrBodyTooLarge) {
+			t.Errorf("Get() error = %v, want %v", err, client.ErrBodyTooLarge)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("Stat() error = %v, want %v (no file for an error response)", err, fs.ErrNotExist)
+		}
+	})
 
-// TestMaxBodySizeLargestLimit checks that the largest limit does not overflow
-// and cut the body short.
-func TestMaxBodySizeLargestLimit(t *testing.T) {
-	server := newBodyServer(t, http.StatusOK, "hello")
+	// The largest limit does not overflow and cut the body short.
+	t.Run("largest limit", func(t *testing.T) {
+		server := newBodyServer(t, http.StatusOK, "hello")
 
-	resp, err := client.Get(server.URL, options.New().SetMaxBodySize(math.MaxInt64))
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if got := resp.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q", got, "hello")
-	}
+		resp, err := client.Get(server.URL, options.New().SetMaxBodySize(math.MaxInt64))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if got := resp.String(); got != "hello" {
+			t.Errorf("String() = %q, want %q", got, "hello")
+		}
+	})
 }

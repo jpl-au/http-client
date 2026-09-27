@@ -9,13 +9,13 @@ import (
 	"github.com/jpl-au/http-client/options"
 )
 
-func TestProgressTracking(t *testing.T) {
+func TestProgress(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
 	largeLen := int64(largefile.Len())
 
-	t.Run("Upload with Progress", func(t *testing.T) {
+	t.Run("upload", func(t *testing.T) {
 		var lastProgress float64
 
 		opt := options.New()
@@ -38,7 +38,7 @@ func TestProgressTracking(t *testing.T) {
 		}
 	})
 
-	t.Run("Upload with Redirect", func(t *testing.T) {
+	t.Run("upload with redirect", func(t *testing.T) {
 		var lastProgress float64
 		progressCalls := 0
 
@@ -68,7 +68,7 @@ func TestProgressTracking(t *testing.T) {
 		}
 	})
 
-	t.Run("Upload with Compression - Track Before Compression", func(t *testing.T) {
+	t.Run("upload before compression", func(t *testing.T) {
 		var lastProgress float64
 
 		opt := options.New()
@@ -91,7 +91,7 @@ func TestProgressTracking(t *testing.T) {
 		}
 	})
 
-	t.Run("Upload with Compression | Track After Compression", func(t *testing.T) {
+	t.Run("upload after compression", func(t *testing.T) {
 		var lastProgress int64
 
 		opt := options.New()
@@ -113,7 +113,7 @@ func TestProgressTracking(t *testing.T) {
 		}
 	})
 
-	t.Run("Download with Progress", func(t *testing.T) {
+	t.Run("download", func(t *testing.T) {
 		var lastProgress float64
 		progressCalls := 0
 

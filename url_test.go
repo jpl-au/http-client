@@ -1,14 +1,19 @@
 package client_test
 
 import (
+	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	client "github.com/jpl-au/http-client"
+	"github.com/jpl-au/http-client/options"
 )
 
 func TestNormaliseURL(t *testing.T) {
-	t.Run("empty URL returns ErrEmptyURL", func(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
 		_, err := client.Get("", nil)
 		if err == nil {
 			t.Fatal("Get() error = nil, want error")
@@ -18,7 +23,7 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("whitespace-only URL returns ErrEmptyURL", func(t *testing.T) {
+	t.Run("whitespace only", func(t *testing.T) {
 		_, err := client.Get("   ", nil)
 		if err == nil {
 			t.Fatal("Get() error = nil, want error")
@@ -28,26 +33,38 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("URL without scheme defaults to https", func(t *testing.T) {
-		server := setupTestServer(t)
+	// A URL without a scheme uses https, unless SetProtocolScheme sets another.
+	// The URLs name example.com, which the test certificate covers, and the
+	// transport dials the test server for every address.
+	t.Run("no scheme uses https", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		defer server.Close()
 
-		// Extract host:port from server URL (which includes http://)
-		serverHost := server.URL[7:] // strip "http://"
-
-		// Since the test server uses http, we can't directly test https default
-		// Instead, test that a URL with explicit http:// works
-		resp, err := client.Get(server.URL, nil)
+		c := client.NewCustom(clientDialling(server))
+		resp, err := c.Get("example.com")
 		if err != nil {
 			t.Fatalf("Get() error = %v", err)
 		}
-		if resp.StatusCode != 200 {
-			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, 200)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 		}
-		_ = serverHost // acknowledge we extracted this for documentation
 	})
 
-	t.Run("URL with scheme preserved", func(t *testing.T) {
+	t.Run("no scheme uses set scheme", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
+
+		c := client.NewCustom(clientDialling(server))
+		resp, err := c.Get("example.com", options.New().SetProtocolScheme("http"))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	})
+
+	t.Run("with scheme", func(t *testing.T) {
 		server := setupTestServer(t)
 		defer server.Close()
 
@@ -60,7 +77,7 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("URL with path preserved", func(t *testing.T) {
+	t.Run("with path", func(t *testing.T) {
 		server := setupTestServer(t)
 		defer server.Close()
 
@@ -73,7 +90,7 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("URL with query parameters preserved", func(t *testing.T) {
+	t.Run("with query", func(t *testing.T) {
 		server := setupTestServer(t)
 		defer server.Close()
 
@@ -86,7 +103,7 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("missing host returns ErrMissingHost", func(t *testing.T) {
+	t.Run("missing host", func(t *testing.T) {
 		_, err := client.Get("http://", nil)
 		if err == nil {
 			t.Fatal("Get() error = nil, want error")
@@ -96,7 +113,7 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("scheme-only URL returns ErrMissingHost", func(t *testing.T) {
+	t.Run("scheme only", func(t *testing.T) {
 		_, err := client.Get("https://", nil)
 		if err == nil {
 			t.Fatal("Get() error = nil, want error")
@@ -105,4 +122,15 @@ func TestNormaliseURL(t *testing.T) {
 			t.Errorf("Get() error = %v, want %v", err, client.ErrMissingHost)
 		}
 	})
+}
+
+// clientDialling returns an http.Client that trusts server's certificate and
+// dials server for every address, so a request to any host reaches it.
+func clientDialling(server *httptest.Server) *http.Client {
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	return &http.Client{Transport: transport}
 }

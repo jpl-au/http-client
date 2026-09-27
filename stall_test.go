@@ -41,105 +41,107 @@ func newStallServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Re
 	return server
 }
 
-func TestStallTimeout(t *testing.T) {
-	tests := []struct {
-		name    string
-		handler func(w http.ResponseWriter, r *http.Request, done <-chan struct{})
-		payload any
-	}{
-		{"download stops part way", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-			w.Header().Set("Content-Length", "10")
-			_, _ = w.Write([]byte("abc"))
-			w.(http.Flusher).Flush()
-			<-done
-		}, nil},
-		{"server never answers", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-			<-done
-		}, nil},
-		{"server never reads the upload", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-			<-done
-		}, largefile.Bytes()},
-	}
+func TestOption_SetStallTimeout(t *testing.T) {
+	t.Run("stall detected", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			handler func(w http.ResponseWriter, r *http.Request, done <-chan struct{})
+			payload any
+		}{
+			{"download stops part way", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+				w.Header().Set("Content-Length", "10")
+				_, _ = w.Write([]byte("abc"))
+				w.(http.Flusher).Flush()
+				<-done
+			}, nil},
+			{"server never answers", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+				<-done
+			}, nil},
+			{"server never reads the upload", func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+				<-done
+			}, largefile.Bytes()},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := newStallServer(t, tt.handler)
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				server := newStallServer(t, tt.handler)
 
-			start := time.Now()
-			resp, err := client.Post(server.URL, tt.payload, stallOption(t))
-			if !errors.Is(err, client.ErrStalled) {
-				t.Fatalf("Post() error = %v, want %v", err, client.ErrStalled)
-			}
-			if !errors.Is(resp.Error, client.ErrStalled) {
-				t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrStalled)
-			}
-			if elapsed := time.Since(start); elapsed > 10*stallTimeout {
-				t.Errorf("Post() returned after %v, want about %v", elapsed, stallTimeout)
-			}
-		})
-	}
-}
-
-// TestStallTimeoutAllowsSteadyTransfer checks that a body that arrives in
-// small parts, over a longer time than the timeout, is not cancelled.
-func TestStallTimeoutAllowsSteadyTransfer(t *testing.T) {
-	server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-		for range 10 {
-			_, _ = w.Write([]byte("x"))
-			w.(http.Flusher).Flush()
-			time.Sleep(stallTimeout / 4)
+				start := time.Now()
+				resp, err := client.Post(server.URL, tt.payload, stallOption(t))
+				if !errors.Is(err, client.ErrStalled) {
+					t.Fatalf("Post() error = %v, want %v", err, client.ErrStalled)
+				}
+				if !errors.Is(resp.Error, client.ErrStalled) {
+					t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrStalled)
+				}
+				if elapsed := time.Since(start); elapsed > 10*stallTimeout {
+					t.Errorf("Post() returned after %v, want about %v", elapsed, stallTimeout)
+				}
+			})
 		}
 	})
 
-	resp, err := client.Get(server.URL, stallOption(t))
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if got, want := resp.String(), "xxxxxxxxxx"; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
-}
+	// A body that arrives in small parts, over a longer time than the timeout,
+	// is not cancelled.
+	t.Run("steady transfer", func(t *testing.T) {
+		server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+			for range 10 {
+				_, _ = w.Write([]byte("x"))
+				w.(http.Flusher).Flush()
+				time.Sleep(stallTimeout / 4)
+			}
+		})
 
-// TestStallTimeoutOffByDefault checks that, without a timeout, a request is
-// not cancelled when the server sends no data for a while.
-func TestStallTimeoutOffByDefault(t *testing.T) {
-	server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-		_, _ = w.Write([]byte("abc"))
-		w.(http.Flusher).Flush()
-		time.Sleep(2 * stallTimeout)
-		_, _ = w.Write([]byte("def"))
+		resp, err := client.Get(server.URL, stallOption(t))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if got, want := resp.String(), "xxxxxxxxxx"; got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
 	})
 
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if got, want := resp.String(), "abcdef"; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
-}
+	// Without a timeout, a request is not cancelled when the server sends no
+	// data for a while.
+	t.Run("off by default", func(t *testing.T) {
+		server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+			_, _ = w.Write([]byte("abc"))
+			w.(http.Flusher).Flush()
+			time.Sleep(2 * stallTimeout)
+			_, _ = w.Write([]byte("def"))
+		})
 
-// TestClientStallTimeout checks that a Client applies a global stall timeout,
-// and that a per-request SetStallTimeout(0) removes it.
-func TestClientStallTimeout(t *testing.T) {
-	server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = w.Write([]byte("abc"))
-		w.(http.Flusher).Flush()
-		time.Sleep(2 * stallTimeout)
-		_, _ = w.Write([]byte("def"))
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if got, want := resp.String(), "abcdef"; got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
 	})
 
-	c := client.New(options.New().SetStallTimeout(stallTimeout))
-	if _, err := c.Get(server.URL); !errors.Is(err, client.ErrStalled) {
-		t.Errorf("Get() error = %v, want %v", err, client.ErrStalled)
-	}
+	// A Client applies a global stall timeout, and a per-request
+	// SetStallTimeout(0) removes it.
+	t.Run("through a client", func(t *testing.T) {
+		server := newStallServer(t, func(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			_, _ = w.Write([]byte("abc"))
+			w.(http.Flusher).Flush()
+			time.Sleep(2 * stallTimeout)
+			_, _ = w.Write([]byte("def"))
+		})
 
-	resp, err := c.Get(server.URL, options.New().SetStallTimeout(0))
-	if err != nil {
-		t.Fatalf("Get() with SetStallTimeout(0) error = %v", err)
-	}
-	if got, want := resp.String(), "abcdef"; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+		c := client.New(options.New().SetStallTimeout(stallTimeout))
+		if _, err := c.Get(server.URL); !errors.Is(err, client.ErrStalled) {
+			t.Errorf("Get() error = %v, want %v", err, client.ErrStalled)
+		}
+
+		resp, err := c.Get(server.URL, options.New().SetStallTimeout(0))
+		if err != nil {
+			t.Fatalf("Get() with SetStallTimeout(0) error = %v", err)
+		}
+		if got, want := resp.String(), "abcdef"; got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
+	})
 }

@@ -18,9 +18,10 @@ import (
 	"github.com/jpl-au/http-client/options"
 )
 
-// TestOptionsMergeInitialised tests that Merge respects the initialised flag for boolean fields
-func TestOptionsMergeInitialised(t *testing.T) {
-	t.Run("Uninitialised source should not override booleans", func(t *testing.T) {
+// TestOption_Merge checks how Merge copies a source Option into a destination.
+func TestOption_Merge(t *testing.T) {
+	// Merge respects the initialised flag for boolean fields.
+	t.Run("uninitialised source keeps booleans", func(t *testing.T) {
 		// Create a properly initialised option with specific boolean values
 		dest := options.New()
 		dest.Logging.Enabled = true
@@ -40,7 +41,7 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		}
 	})
 
-	t.Run("Default source should not override booleans", func(t *testing.T) {
+	t.Run("default source keeps settings", func(t *testing.T) {
 		dest := options.New()
 		dest.Logging.Enabled = true
 		dest.Redirect.Follow = true
@@ -80,7 +81,7 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		}
 	})
 
-	t.Run("Setters that choose a zero value should override", func(t *testing.T) {
+	t.Run("zero value setters override", func(t *testing.T) {
 		dest := options.New().
 			EnableLogging().
 			EnableRedirects().
@@ -134,7 +135,7 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		}
 	})
 
-	t.Run("MaxRedirects zero should not override", func(t *testing.T) {
+	t.Run("zero max redirects kept", func(t *testing.T) {
 		dest := options.New()
 		dest.Redirect.Max = 15
 
@@ -147,7 +148,7 @@ func TestOptionsMergeInitialised(t *testing.T) {
 		}
 	})
 
-	t.Run("MaxRedirects non-zero should override", func(t *testing.T) {
+	t.Run("non-zero max redirects override", func(t *testing.T) {
 		dest := options.New()
 		dest.Redirect.Max = 15
 
@@ -160,193 +161,194 @@ func TestOptionsMergeInitialised(t *testing.T) {
 			t.Errorf("Redirect.Max = %d after merge, want 5", dest.Redirect.Max)
 		}
 	})
+
+	// Setters that clear a setting override the destination through Merge, and a default source leaves those settings.
+	t.Run("reset setters", func(t *testing.T) {
+		base := func() *options.Option {
+			return options.New().
+				SetContext(context.Background()).
+				OnUploadProgress(func(int64, int64) {}).
+				OnDownloadProgress(func(int64, int64) {}).
+				SetTransport(&http.Transport{}).
+				SetProtocolScheme("https").
+				SetMaxBodySize(1024).
+				SetStallTimeout(time.Second).
+				SetChecksum(sha256.New, "00").
+				DisableDigestCheck().
+				SetSegments(4)
+		}
+
+		t.Run("default source keeps settings", func(t *testing.T) {
+			dest := base()
+			dest.Merge(options.New())
+
+			if dest.Context == nil {
+				t.Error("Context = nil, want the context kept")
+			}
+			if dest.Progress.OnUpload == nil {
+				t.Error("Progress.OnUpload = nil, want the callback kept")
+			}
+			if dest.Progress.OnDownload == nil {
+				t.Error("Progress.OnDownload = nil, want the callback kept")
+			}
+			if dest.Transport.HTTP == nil {
+				t.Error("Transport.HTTP = nil, want the transport kept")
+			}
+			if dest.Transport.Scheme != "https://" {
+				t.Errorf("Transport.Scheme = %q, want %q", dest.Transport.Scheme, "https://")
+			}
+			if dest.MaxBodySize != 1024 {
+				t.Errorf("MaxBodySize = %d, want 1024", dest.MaxBodySize)
+			}
+			if dest.StallTimeout != time.Second {
+				t.Errorf("StallTimeout = %v, want %v", dest.StallTimeout, time.Second)
+			}
+			if dest.Checksum.New == nil || dest.Checksum.Expected != "00" {
+				t.Errorf("Checksum = %+v, want sha256.New and %q", dest.Checksum, "00")
+			}
+			if !dest.SkipDigestCheck {
+				t.Error("SkipDigestCheck = false, want true")
+			}
+			if dest.Segments != 4 {
+				t.Errorf("Segments = %d, want 4", dest.Segments)
+			}
+		})
+
+		t.Run("clear settings", func(t *testing.T) {
+			dest := base()
+			dest.Merge(options.New().
+				SetContext(nil).
+				OnUploadProgress(nil).
+				OnDownloadProgress(nil).
+				SetTransport(nil).
+				SetProtocolScheme("").
+				SetMaxBodySize(0).
+				SetStallTimeout(0).
+				SetChecksum(nil, "").
+				EnableDigestCheck().
+				SetSegments(0))
+
+			if dest.Context != nil {
+				t.Errorf("Context = %v, want nil", dest.Context)
+			}
+			if dest.Progress.OnUpload != nil {
+				t.Error("Progress.OnUpload is set, want nil")
+			}
+			if dest.Progress.OnDownload != nil {
+				t.Error("Progress.OnDownload is set, want nil")
+			}
+			if dest.Transport.HTTP != nil {
+				t.Errorf("Transport.HTTP = %v, want nil", dest.Transport.HTTP)
+			}
+			if dest.Transport.Scheme != "" {
+				t.Errorf("Transport.Scheme = %q, want \"\"", dest.Transport.Scheme)
+			}
+			if dest.MaxBodySize != 0 {
+				t.Errorf("MaxBodySize = %d, want 0", dest.MaxBodySize)
+			}
+			if dest.StallTimeout != 0 {
+				t.Errorf("StallTimeout = %v, want 0", dest.StallTimeout)
+			}
+			if dest.Checksum.New != nil || dest.Checksum.Expected != "" {
+				t.Errorf("Checksum = %+v, want none", dest.Checksum)
+			}
+			if dest.SkipDigestCheck {
+				t.Error("SkipDigestCheck = true, want false")
+			}
+			if dest.Segments != 0 {
+				t.Errorf("Segments = %d, want 0", dest.Segments)
+			}
+		})
+	})
 }
 
-// TestReusedOptionSendsCookiesOnce checks that reusing one Option for several
-// package-level requests does not accumulate cookies.
-func TestReusedOptionSendsCookiesOnce(t *testing.T) {
-	var cookies []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookies = append(cookies, r.Header.Get("Cookie"))
-	}))
-	defer server.Close()
+// TestOptionReuse checks that package-level functions can reuse one Option.
+func TestOptionReuse(t *testing.T) {
+	// Reusing one Option for several package-level requests does not accumulate cookies.
+	t.Run("cookies sent once", func(t *testing.T) {
+		var cookies []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookies = append(cookies, r.Header.Get("Cookie"))
+		}))
+		defer server.Close()
 
-	opt := options.New().AddCookie(&http.Cookie{Name: "session", Value: "audit"})
-	for range 3 {
-		_, err := client.Get(server.URL, opt)
-		if err != nil {
-			t.Fatalf("Get() error = %v", err)
+		opt := options.New().AddCookie(&http.Cookie{Name: "session", Value: "audit"})
+		for range 3 {
+			_, err := client.Get(server.URL, opt)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
 		}
-	}
 
-	if want := []string{"session=audit", "session=audit", "session=audit"}; !slices.Equal(cookies, want) {
-		t.Errorf("Cookie headers = %q, want %q", cookies, want)
-	}
-}
-
-// TestPackageFunctionsLeaveOptionUnchanged checks that package-level functions
-// do not write request state into the caller's Option.
-func TestPackageFunctionsLeaveOptionUnchanged(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	opt := options.New()
-
-	_, err := client.Get(server.URL+"/echo", opt)
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	_, err = client.Post(server.URL+"/echo", url.Values{"k": {"v"}}, opt)
-	if err != nil {
-		t.Fatalf("Post() error = %v", err)
-	}
-	_, err = client.PostFile(server.URL+"/upload", smallf, opt)
-	if err != nil {
-		t.Fatalf("PostFile() error = %v", err)
-	}
-	_, err = client.Post(server.URL+"/upload/multipart", form.New().Field("k", "v"), opt)
-	if err != nil {
-		t.Fatalf("Post() with a form error = %v", err)
-	}
-
-	if len(opt.Header) != 0 {
-		t.Errorf("Option.Header = %v, want empty (request headers must not be written into the caller's Option)", opt.Header)
-	}
-	if opt.HasFile() {
-		t.Error("Option.HasFile() = true, want false (PostFile must not prepare a file on the caller's Option)")
-	}
-}
-
-// TestPackageFunctionsUseOptionClient checks that a client set on an Option
-// carries package-level requests.
-func TestPackageFunctionsUseOptionClient(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	var dials atomic.Int32
-	dialer := &net.Dialer{}
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dials.Add(1)
-			return dialer.DialContext(ctx, network, addr)
-		},
-	}
-	defer transport.CloseIdleConnections()
-
-	_, err := client.Get(server.URL+"/echo", options.New().SetClient(&http.Client{Transport: transport}))
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-
-	if got := dials.Load(); got != 1 {
-		t.Errorf("dials = %d, want 1", got)
-	}
-}
-
-// TestRedirectsZeroUsesDefaultMax checks that Redirects with a zero maximum
-// falls back to the same limit as a new Option.
-func TestRedirectsZeroUsesDefaultMax(t *testing.T) {
-	if got, want := options.New().Redirects(true, 0).MaxRedirects(), options.New().MaxRedirects(); got != want {
-		t.Errorf("Redirects(true, 0).MaxRedirects() = %d, want %d", got, want)
-	}
-}
-
-// TestMergeResetSetters checks that setters that clear a setting override the
-// destination through Merge, and that a default source leaves those settings.
-func TestMergeResetSetters(t *testing.T) {
-	base := func() *options.Option {
-		return options.New().
-			SetContext(context.Background()).
-			OnUploadProgress(func(int64, int64) {}).
-			OnDownloadProgress(func(int64, int64) {}).
-			SetTransport(&http.Transport{}).
-			SetProtocolScheme("https").
-			SetMaxBodySize(1024).
-			SetStallTimeout(time.Second).
-			SetChecksum(sha256.New, "00").
-			DisableDigestCheck().
-			SetSegments(4)
-	}
-
-	t.Run("default source keeps the settings", func(t *testing.T) {
-		dest := base()
-		dest.Merge(options.New())
-
-		if dest.Context == nil {
-			t.Error("Context = nil, want the context kept")
-		}
-		if dest.Progress.OnUpload == nil {
-			t.Error("Progress.OnUpload = nil, want the callback kept")
-		}
-		if dest.Progress.OnDownload == nil {
-			t.Error("Progress.OnDownload = nil, want the callback kept")
-		}
-		if dest.Transport.HTTP == nil {
-			t.Error("Transport.HTTP = nil, want the transport kept")
-		}
-		if dest.Transport.Scheme != "https://" {
-			t.Errorf("Transport.Scheme = %q, want %q", dest.Transport.Scheme, "https://")
-		}
-		if dest.MaxBodySize != 1024 {
-			t.Errorf("MaxBodySize = %d, want 1024", dest.MaxBodySize)
-		}
-		if dest.StallTimeout != time.Second {
-			t.Errorf("StallTimeout = %v, want %v", dest.StallTimeout, time.Second)
-		}
-		if dest.Checksum.New == nil || dest.Checksum.Expected != "00" {
-			t.Errorf("Checksum = %+v, want sha256.New and %q", dest.Checksum, "00")
-		}
-		if !dest.SkipDigestCheck {
-			t.Error("SkipDigestCheck = false, want true")
-		}
-		if dest.Segments != 4 {
-			t.Errorf("Segments = %d, want 4", dest.Segments)
+		if want := []string{"session=audit", "session=audit", "session=audit"}; !slices.Equal(cookies, want) {
+			t.Errorf("Cookie headers = %q, want %q", cookies, want)
 		}
 	})
 
-	t.Run("reset setters clear the settings", func(t *testing.T) {
-		dest := base()
-		dest.Merge(options.New().
-			SetContext(nil).
-			OnUploadProgress(nil).
-			OnDownloadProgress(nil).
-			SetTransport(nil).
-			SetProtocolScheme("").
-			SetMaxBodySize(0).
-			SetStallTimeout(0).
-			SetChecksum(nil, "").
-			EnableDigestCheck().
-			SetSegments(0))
+	// Package-level functions do not write request state into the caller's Option.
+	t.Run("option unchanged", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
 
-		if dest.Context != nil {
-			t.Errorf("Context = %v, want nil", dest.Context)
+		opt := options.New()
+
+		_, err := client.Get(server.URL+"/echo", opt)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
 		}
-		if dest.Progress.OnUpload != nil {
-			t.Error("Progress.OnUpload is set, want nil")
+		_, err = client.Post(server.URL+"/echo", url.Values{"k": {"v"}}, opt)
+		if err != nil {
+			t.Fatalf("Post() error = %v", err)
 		}
-		if dest.Progress.OnDownload != nil {
-			t.Error("Progress.OnDownload is set, want nil")
+		_, err = client.PostFile(server.URL+"/upload", smallf, opt)
+		if err != nil {
+			t.Fatalf("PostFile() error = %v", err)
 		}
-		if dest.Transport.HTTP != nil {
-			t.Errorf("Transport.HTTP = %v, want nil", dest.Transport.HTTP)
+		_, err = client.Post(server.URL+"/upload/multipart", form.New().Field("k", "v"), opt)
+		if err != nil {
+			t.Fatalf("Post() with a form error = %v", err)
 		}
-		if dest.Transport.Scheme != "" {
-			t.Errorf("Transport.Scheme = %q, want \"\"", dest.Transport.Scheme)
+
+		if len(opt.Header) != 0 {
+			t.Errorf("Option.Header = %v, want empty (request headers must not be written into the caller's Option)", opt.Header)
 		}
-		if dest.MaxBodySize != 0 {
-			t.Errorf("MaxBodySize = %d, want 0", dest.MaxBodySize)
+		if opt.HasFile() {
+			t.Error("Option.HasFile() = true, want false (PostFile must not prepare a file on the caller's Option)")
 		}
-		if dest.StallTimeout != 0 {
-			t.Errorf("StallTimeout = %v, want 0", dest.StallTimeout)
+	})
+
+	// A client set on an Option carries package-level requests.
+	t.Run("option client used", func(t *testing.T) {
+		server := setupTestServer(t)
+		defer server.Close()
+
+		var dials atomic.Int32
+		dialer := &net.Dialer{}
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dials.Add(1)
+				return dialer.DialContext(ctx, network, addr)
+			},
 		}
-		if dest.Checksum.New != nil || dest.Checksum.Expected != "" {
-			t.Errorf("Checksum = %+v, want none", dest.Checksum)
+		defer transport.CloseIdleConnections()
+
+		_, err := client.Get(server.URL+"/echo", options.New().SetClient(&http.Client{Transport: transport}))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
 		}
-		if dest.SkipDigestCheck {
-			t.Error("SkipDigestCheck = true, want false")
+
+		if got := dials.Load(); got != 1 {
+			t.Errorf("dials = %d, want 1", got)
 		}
-		if dest.Segments != 0 {
-			t.Errorf("Segments = %d, want 0", dest.Segments)
+	})
+}
+
+// TestOption_SetMaxRedirects checks the maximum number of redirects.
+func TestOption_SetMaxRedirects(t *testing.T) {
+	// Redirects with a zero maximum falls back to the same limit as a new Option.
+	t.Run("zero uses default", func(t *testing.T) {
+		if got, want := options.New().Redirects(true, 0).MaxRedirects(), options.New().MaxRedirects(); got != want {
+			t.Errorf("Redirects(true, 0).MaxRedirects() = %d, want %d", got, want)
 		}
 	})
 }
