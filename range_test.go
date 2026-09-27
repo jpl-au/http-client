@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1001,5 +1002,105 @@ func TestResumeRejectsTransportDecodedResponse(t *testing.T) {
 		if got := contentOrAbsent(t, name); got != absent {
 			t.Errorf("%s = %q, want absent", name, got)
 		}
+	}
+}
+
+// TestResumeClaimsPartialFile checks that a resumed download claims its partial
+// file until it finishes: another resume of the same destination fails at once,
+// without a request, while a resume of another destination runs.
+func TestResumeClaimsPartialFile(t *testing.T) {
+	var requests atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	// The server holds the first request part way through its body.
+	held := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		if requests.Add(1) > 1 {
+			_, _ = w.Write([]byte("abcdef"))
+			return
+		}
+		_, _ = w.Write([]byte("abc"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("def"))
+	}))
+	defer held.Close()
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("other"))
+	}))
+	defer other.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.Get(held.URL, options.New().Resume(path, nil))
+		first <- err
+	}()
+	<-started
+
+	// filepath.Join cleans a path, so the second spelling is built by hand.
+	sep := string(filepath.Separator)
+	for _, p := range []string{path, dir + sep + "." + sep + "download.bin"} {
+		resp, err := client.Get(held.URL, options.New().Resume(p, nil))
+		if !errors.Is(err, client.ErrDownloadInProgress) {
+			t.Errorf("Get() to %q error = %v, want %v", p, err, client.ErrDownloadInProgress)
+		}
+		if !errors.Is(resp.Error, client.ErrDownloadInProgress) {
+			t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrDownloadInProgress)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1", got)
+	}
+
+	otherPath := filepath.Join(dir, "other.bin")
+	if _, err := client.Get(other.URL, options.New().Resume(otherPath, nil)); err != nil {
+		t.Errorf("Get() to another destination error = %v", err)
+	}
+	if got := contentOrAbsent(t, otherPath); got != "other" {
+		t.Errorf("other destination = %q, want %q", got, "other")
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first Get() error = %v", err)
+	}
+	if got := contentOrAbsent(t, path); got != "abcdef" {
+		t.Errorf("destination = %q, want %q", got, "abcdef")
+	}
+
+	if _, err := client.Get(held.URL, options.New().Resume(path, nil)); err != nil {
+		t.Errorf("Get() after the first finished error = %v", err)
+	}
+}
+
+// TestResumeReleasesPartialFileAfterFailure checks that a resumed download that
+// fails does not keep its claim on the partial file.
+func TestResumeReleasesPartialFileAfterFailure(t *testing.T) {
+	mismatched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-2/6")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("abc"))
+	}))
+	defer mismatched.Close()
+	whole := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("abcdef"))
+	}))
+	defer whole.Close()
+
+	path := filepath.Join(t.TempDir(), "download.bin")
+	writePartial(t, path, "abc")
+
+	if _, err := client.Get(mismatched.URL, options.New().Resume(path, etag(`"v1"`))); !errors.Is(err, client.ErrRangeMismatch) {
+		t.Fatalf("Get() error = %v, want %v", err, client.ErrRangeMismatch)
+	}
+	if _, err := client.Get(whole.URL, options.New().Resume(path, nil)); err != nil {
+		t.Errorf("Get() after a failed resume error = %v", err)
+	}
+	if got := contentOrAbsent(t, path); got != "abcdef" {
+		t.Errorf("destination = %q, want %q", got, "abcdef")
 	}
 }

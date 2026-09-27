@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -78,6 +79,14 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	}
 	resp.URL = url
 
+	if opt.Range.IsResume {
+		releasePartial, err := claimPartialFile(opt.ResponseWriter.FilePath)
+		if err != nil {
+			return resp, err
+		}
+		defer releasePartial()
+	}
+
 	if err := prepareResume(opt); err != nil {
 		return resp, err
 	}
@@ -136,6 +145,37 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 
 	// Process final response
 	return processResponse(httpResp, resp, opt, start)
+}
+
+// partialFiles holds the partial files that resumed downloads in this process
+// use. A partial file has one resumed download at a time: another would read
+// the file's size, and then the first would change it.
+var partialFiles = struct {
+	sync.Mutex
+	paths map[string]bool
+}{paths: make(map[string]bool)}
+
+// claimPartialFile claims the partial file of a resumed download to dest, and
+// returns a function that releases it. It returns an error wrapping
+// ErrDownloadInProgress when another resumed download holds the file. The claim
+// uses the absolute path, so it does not detect one file reached through a
+// symbolic or hard link.
+func claimPartialFile(dest string) (func(), error) {
+	path, err := filepath.Abs(options.PartialPath(dest))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve partial file path: %w", err)
+	}
+	partialFiles.Lock()
+	defer partialFiles.Unlock()
+	if partialFiles.paths[path] {
+		return nil, fmt.Errorf("%w: %s", ErrDownloadInProgress, path)
+	}
+	partialFiles.paths[path] = true
+	return func() {
+		partialFiles.Lock()
+		delete(partialFiles.paths, path)
+		partialFiles.Unlock()
+	}, nil
 }
 
 // prepareResume sets up a resumed download when the request starts.

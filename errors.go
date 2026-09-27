@@ -27,6 +27,11 @@ var (
 	// the bytes received, and resuming again continues from its end.
 	ErrDownloadIncomplete = errors.New("download incomplete")
 
+	// ErrDownloadInProgress is returned when a resumed download starts while
+	// another resumed download in this process uses the same partial file. The
+	// request is not sent.
+	ErrDownloadInProgress = errors.New("download already in progress")
+
 	// ErrPayloadNotReplayable is returned when a 307 or 308 redirect needs the request
 	// body again but the payload is a reader that can only be read once. Use []byte,
 	// string, *bytes.Buffer, a file, or a seekable reader to follow such redirects.

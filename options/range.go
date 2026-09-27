@@ -133,6 +133,10 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // before writing, including on the first attempt and when restarting. Decoded
 // bytes cannot safely be resumed using the encoded representation's offsets.
 //
+// A partial file has one resumed download at a time in a process. Another
+// resumed download to the same destination fails with client.ErrDownloadInProgress
+// before it sends a request.
+//
 // Example usage:
 //
 //	opt := options.New().Resume("/path/to/file.bin", previous.Header)

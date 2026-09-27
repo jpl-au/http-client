@@ -182,6 +182,8 @@ HTTP error statuses do not produce a Go error, so check the status as well. A re
 
 For a later attempt, keep headers associated with the retained partial bytes. Do not replace them with headers from a rejected response, including `client.ErrRangeMismatch`, or an HTTP error response. If that association is uncertain, pass nil to restart safely. `client.ErrDownloadIncomplete` means a valid range was retained but the file is not complete. Resume requests require an unencoded response; an encoded response is rejected before any file data changes.
 
+A partial file has one resumed download at a time in a process. Another resumed download to the same destination fails with `client.ErrDownloadInProgress` before it sends a request. Separate processes are not coordinated, so do not resume the same file from two processes at once.
+
 ## Request Tracing
 
 Add unique identifiers to requests for distributed tracing:
