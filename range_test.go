@@ -3,6 +3,7 @@ package client_test
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -532,7 +533,7 @@ func TestResumeValidatesResponse(t *testing.T) {
 		{"full response restarts the file", http.StatusOK, "", "abcdef", "abcdef", absent, nil},
 		{"range short of the total", http.StatusPartialContent, "bytes 3-4/6", "de", absent, "abcde", client.ErrDownloadIncomplete},
 		{"wrong start", http.StatusPartialContent, "bytes 0-2/6", "abc", absent, "abc", client.ErrRangeMismatch},
-		{"unsatisfiable range", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", absent, "abc", nil},
+		{"unsatisfiable range of a complete partial file", http.StatusRequestedRangeNotSatisfiable, "bytes */3", "range error", "abc", absent, nil},
 		{"server error", http.StatusInternalServerError, "", "server error", absent, "abc", nil},
 		{"body shorter than range", http.StatusPartialContent, "bytes 3-5/6", "d", absent, "abc", client.ErrRangeMismatch},
 		{"body longer than range", http.StatusPartialContent, "bytes 3-5/6", "defgh", absent, "abc", client.ErrRangeMismatch},
@@ -1102,5 +1103,93 @@ func TestResumeReleasesPartialFileAfterFailure(t *testing.T) {
 	}
 	if got := contentOrAbsent(t, path); got != "abcdef" {
 		t.Errorf("destination = %q, want %q", got, "abcdef")
+	}
+}
+
+// TestResumePublishesCompletePartialFile checks that a partial file that
+// already holds the whole file is published. Its resume asks for a range past
+// the end, and the server answers 416 with the file's size.
+func TestResumePublishesCompletePartialFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		http.ServeContent(w, r, "", time.Time{}, strings.NewReader("abcdef"))
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name        string
+		checksum    string
+		wantErr     error
+		wantFile    string
+		wantPartial string
+	}{
+		{"no checksum", "", nil, "abcdef", absent},
+		{"matching checksum", sha256Hex("abcdef"), nil, "abcdef", absent},
+		{"different checksum", sha256Hex("other"), client.ErrChecksumMismatch, absent, absent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, "abcdef")
+			opt := options.New().Resume(path, etag(`"v1"`))
+			if tt.checksum != "" {
+				opt.SetChecksum(sha256.New, tt.checksum)
+			}
+
+			resp, err := client.Get(server.URL, opt)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil && resp.StatusCode != http.StatusOK {
+				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if got := contentOrAbsent(t, path); got != tt.wantFile {
+				t.Errorf("destination = %q, want %q", got, tt.wantFile)
+			}
+			if got := contentOrAbsent(t, options.PartialPath(path)); got != tt.wantPartial {
+				t.Errorf("partial file = %q, want %q", got, tt.wantPartial)
+			}
+		})
+	}
+}
+
+// TestResumeRejectsUnsatisfiableRange checks the 416 responses to a resume
+// that do not show a complete partial file.
+func TestResumeRejectsUnsatisfiableRange(t *testing.T) {
+	tests := []struct {
+		name        string
+		etag        string
+		size        int
+		wantPartial string
+	}{
+		// The partial file is longer than the file, so it is not a copy of
+		// it, and it is removed so the next resume starts again.
+		{"partial file longer than the file", `"v1"`, 4, absent},
+		// A 416 that names another version does not describe this partial
+		// file, so it is kept.
+		{"another version", `"v2"`, 6, "abcdef"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("ETag", tt.etag)
+				w.Header().Set("Content-Range", "bytes */"+strconv.Itoa(tt.size))
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			}))
+			defer server.Close()
+			path := filepath.Join(t.TempDir(), "download.bin")
+			writePartial(t, path, "abcdef")
+
+			_, err := client.Get(server.URL, options.New().Resume(path, etag(`"v1"`)))
+			if !errors.Is(err, client.ErrRangeMismatch) {
+				t.Fatalf("Get() error = %v, want %v", err, client.ErrRangeMismatch)
+			}
+			if got := contentOrAbsent(t, path); got != absent {
+				t.Errorf("destination = %q, want %q", got, absent)
+			}
+			if got := contentOrAbsent(t, options.PartialPath(path)); got != tt.wantPartial {
+				t.Errorf("partial file = %q, want %q", got, tt.wantPartial)
+			}
+		})
 	}
 }

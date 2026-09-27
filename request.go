@@ -615,6 +615,19 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		return resp, fmt.Errorf("%w: asked for the whole file, received %s", ErrRangeMismatch, r.Header.Get("Content-Range"))
 	}
 
+	// A partial file that already holds the whole file asks for a range past
+	// its end, and the server answers 416 with the file's size.
+	if opt.Range.IsResume && opt.Range.IsSet && r.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))
+		if err == nil && cr.Unit == "bytes" && cr.Total >= 0 && cr.Total <= opt.Range.Start {
+			if err := publishCompletePartialFile(r, opt, sum, cr.Total); err != nil {
+				return resp, err
+			}
+			markWholeFile(&resp, r.Header, cr.Total)
+			return resp, nil
+		}
+	}
+
 	encoding := r.Header.Get("Content-Encoding")
 
 	// A resumed download appends to the partial file, so a partial response
@@ -813,6 +826,80 @@ func hasBody(r *http.Response) bool {
 	return true
 }
 
+// checkVersion returns an error wrapping ErrRangeMismatch when the header h
+// names another version than the ETag etag and the Last-Modified modified: a
+// different ETag or a different Last-Modified. A validator that only one side
+// has is not compared.
+func checkVersion(h http.Header, etag, modified string) error {
+	if got := h.Get("ETag"); got != "" && etag != "" && got != etag {
+		return fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, got, etag)
+	}
+	if got := h.Get("Last-Modified"); got != "" && modified != "" && !sameTime(got, modified) {
+		return fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, got, modified)
+	}
+	return nil
+}
+
+// markWholeFile presents resp as a response that delivered the whole file of
+// total bytes, with the status 200 OK and header h. It removes the headers
+// that describe only one range of the file.
+func markWholeFile(resp *response.Response, h http.Header, total int64) {
+	resp.Status = strconv.Itoa(http.StatusOK) + " " + http.StatusText(http.StatusOK)
+	resp.StatusCode = http.StatusOK
+	resp.ContentLength = total
+	resp.IsPartialContent = false
+	resp.ContentRange = nil
+	resp.Header = h.Clone()
+	resp.Header.Del("Content-Range")
+	resp.Header.Del("Content-Digest")
+	resp.Header.Set("Content-Length", strconv.FormatInt(total, 10))
+}
+
+// publishCompletePartialFile publishes a partial file that already holds the
+// whole file of total bytes. Its resume asked for a range past its end with a
+// strong If-Range validator, so the server compared the range with the version
+// the partial file holds (RFC 9110, section 13.1.5), and answered 416 with the
+// file's size.
+//
+// A response that names another version fails and keeps the partial file. A
+// file smaller than the partial file shows that the partial file is not a copy
+// of it, so the partial file is removed and the next resume starts again. The
+// checksum set with SetChecksum, when there is one, must match before the
+// partial file is published.
+func publishCompletePartialFile(r *http.Response, opt *options.Option, sum *checksum, total int64) error {
+	if err := checkVersion(r.Header, opt.Range.ETag, opt.Range.LastModified); err != nil {
+		return err
+	}
+	dest := opt.ResponseWriter.FilePath
+	if total < opt.Range.Start {
+		mismatch := fmt.Errorf("%w: the partial file has %d bytes, the file has %d; resume again to start again",
+			ErrRangeMismatch, opt.Range.Start, total)
+		if err := os.Remove(options.PartialPath(dest)); err != nil {
+			return errors.Join(mismatch, fmt.Errorf("failed to remove partial file: %w", err))
+		}
+		return mismatch
+	}
+
+	writer, err := opt.InitialiseWriter()
+	if err != nil {
+		return fmt.Errorf("failed to initialise writer: %w", err)
+	}
+	partial, ok := writer.(*options.PartialWriter)
+	if !ok {
+		return errors.Join(fmt.Errorf("resumed download has writer %T, want a partial file", writer), writer.Close())
+	}
+	if sum != nil {
+		if err := sum.hashPartialFile(dest, total); err != nil {
+			return errors.Join(err, partial.Close())
+		}
+		if err := sum.check(); err != nil {
+			// Any byte of the partial file can be wrong, so remove it all.
+			return errors.Join(err, partial.Remove())
+		}
+	}
+	return partial.Publish()
+}
+
 // resumeRange returns the range of a partial response to a resumed download.
 // It returns an error wrapping ErrRangeMismatch unless the response has a valid
 // bytes Content-Range that starts at the end of the partial file, and belongs
@@ -822,11 +909,8 @@ func resumeRange(r *http.Response, rc options.RangeConfig) (*response.ContentRan
 	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
 	}
-	if etag := r.Header.Get("ETag"); etag != "" && rc.ETag != "" && etag != rc.ETag {
-		return nil, fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, etag, rc.ETag)
-	}
-	if modified := r.Header.Get("Last-Modified"); modified != "" && rc.LastModified != "" && !sameTime(modified, rc.LastModified) {
-		return nil, fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, modified, rc.LastModified)
+	if err := checkVersion(r.Header, rc.ETag, rc.LastModified); err != nil {
+		return nil, err
 	}
 
 	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))

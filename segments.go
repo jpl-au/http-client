@@ -114,16 +114,7 @@ func (d *segmentedDownload) finish(first *http.Response, resp response.Response)
 		return resp, err
 	}
 
-	// The caller receives the whole file, as from an ordinary download.
-	resp.Status = strconv.Itoa(http.StatusOK) + " " + http.StatusText(http.StatusOK)
-	resp.StatusCode = http.StatusOK
-	resp.ContentLength = cr.Total
-	resp.IsPartialContent = false
-	resp.ContentRange = nil
-	resp.Header = first.Header.Clone()
-	resp.Header.Del("Content-Range")
-	resp.Header.Del("Content-Digest")
-	resp.Header.Set("Content-Length", strconv.FormatInt(cr.Total, 10))
+	markWholeFile(&resp, first.Header, cr.Total)
 	return resp, nil
 }
 
@@ -197,7 +188,7 @@ func (d *segmentedDownload) fetchSegment(ctx context.Context, from, to int64) er
 	}
 	// A server that ignores If-Range sends a range of whichever version is
 	// current, so compare every validator the responses carry.
-	if err := checkVersion(r.Header, d.header); err != nil {
+	if err := checkVersion(r.Header, d.header.Get("ETag"), d.header.Get("Last-Modified")); err != nil {
 		r.Body.Close()
 		return err
 	}
@@ -256,20 +247,6 @@ func splitSegments(from, total int64, n int) [][2]int64 {
 		segments[i] = [2]int64{first, last}
 	}
 	return segments
-}
-
-// checkVersion returns an error wrapping ErrRangeMismatch when a segment's
-// header names another version than the first response's header: a different
-// ETag or a different Last-Modified. A validator only one of them has is not
-// compared.
-func checkVersion(segment, first http.Header) error {
-	if a, b := segment.Get("ETag"), first.Get("ETag"); a != "" && b != "" && a != b {
-		return fmt.Errorf("%w: ETag %s differs from %s", ErrRangeMismatch, a, b)
-	}
-	if a, b := segment.Get("Last-Modified"), first.Get("Last-Modified"); a != "" && b != "" && !sameTime(a, b) {
-		return fmt.Errorf("%w: Last-Modified %s differs from %s", ErrRangeMismatch, a, b)
-	}
-	return nil
 }
 
 // parseSegmentRange returns the range of a segment response. It returns an

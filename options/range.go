@@ -131,6 +131,11 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // second after its Last-Modified (RFC 9110, section 8.8.2.2).
 //
 // If the partial file doesn't exist or is empty, the download starts from the beginning.
+// If the partial file already holds the whole file, for example after the
+// process stopped before it could publish the file, the server answers the
+// resume with 416 and the file's size, and the partial file is published. A
+// partial file longer than the file is removed with an error that wraps
+// client.ErrRangeMismatch, so the next resume starts again.
 // Resumed downloads ask for the identity encoding and reject encoded responses
 // before writing, including on the first attempt and when restarting. Decoded
 // bytes cannot safely be resumed using the encoded representation's offsets.
