@@ -252,7 +252,7 @@ resp, err := client.Get(url, opt)
 // A successful body is written to the file
 ```
 
-The body is written to a temporary file beside the destination and renamed into place only when it has arrived in full, so a failed download leaves the destination as it was. A replaced file keeps its permissions, and a new file follows the process umask. Only a 2xx response is written to the file. Any other response is returned in the response buffer with no error, so check `resp.StatusCode`.
+The body is written to a temporary file beside the destination and renamed into place only when it has arrived in full, so a failed download leaves the destination as it was. A replaced file keeps its permissions, and a new file follows the process umask. Only a 2xx response is written to the file. Any other response is returned in the response buffer with no error, so check `resp.StatusCode`. A 206 partial response to a download that asked for no range is not the whole file, so it fails with `client.ErrRangeMismatch` and leaves the destination as it was.
 
 ### Downloading in segments
 

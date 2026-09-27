@@ -16,10 +16,18 @@ var (
 	// ErrMissingHost is returned when the URL has no host component.
 	ErrMissingHost = errors.New("missing host")
 
-	// ErrRangeMismatch is returned when a resumed download receives an encoded
-	// representation or a partial response that does not continue the partial
-	// file: a missing or invalid Content-Range, another range unit, another
-	// start offset, or a body whose length differs from its range.
+	// ErrRangeMismatch is returned when a range response does not match the
+	// request, in three cases:
+	//   - A resumed download receives an encoded representation or a partial
+	//     response that does not continue the partial file: a missing or
+	//     invalid Content-Range, another range unit, another start offset, or
+	//     a body whose length differs from its range.
+	//   - A segmented download receives a segment that is not the requested
+	//     range of the first response's version, or that the transport
+	//     decoded. This includes a file that changes on the server during the
+	//     download.
+	//   - A download to a file that asked for no range receives a 206 partial
+	//     response, which is not the whole file.
 	ErrRangeMismatch = errors.New("response does not match the requested range")
 
 	// ErrDownloadIncomplete is returned when a resumed download receives a valid
@@ -46,6 +54,7 @@ var (
 	ErrStalled = errors.New("request stalled")
 
 	// ErrChecksumMismatch is returned when a downloaded body does not match
-	// the checksum set with Option.SetChecksum.
+	// the checksum set with Option.SetChecksum, or the checksum a server sent
+	// in a Repr-Digest or Content-Digest header.
 	ErrChecksumMismatch = errors.New("checksum does not match")
 )

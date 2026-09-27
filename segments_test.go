@@ -471,3 +471,36 @@ func TestSegmentedDownloadTransportDecoded(t *testing.T) {
 		})
 	}
 }
+
+// TestSegmentedDownloadWholeFallbackRejectsRange checks that the request for
+// the whole file, which follows a first response that cannot be split, fails
+// when the server answers it with a range instead of the whole file.
+func TestSegmentedDownloadWholeFallbackRejectsRange(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No validator, so the first response cannot be split, and every
+		// response is the same range of four bytes.
+		requests.Add(1)
+		w.Header().Set("Content-Range", "bytes 0-3/8")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("abcd"))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := client.Get(server.URL, options.New().SetFileOutput(path).SetSegments(4))
+	if !errors.Is(err, client.ErrRangeMismatch) {
+		t.Fatalf("Get() error = %v, want %v", err, client.ErrRangeMismatch)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("server received %d requests, want 2", got)
+	}
+	if got := contentOrAbsent(t, path); got != "old" {
+		t.Errorf("destination = %q, want %q", got, "old")
+	}
+	onlyFile(t, dir, "download.bin")
+}

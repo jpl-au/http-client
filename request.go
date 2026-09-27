@@ -600,6 +600,12 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		return resp, nil
 	}
 
+	// A 206 answers a request for a range. A request that asked for none
+	// receives only part of the file, which must not replace the destination.
+	if r.StatusCode == http.StatusPartialContent && opt.ResponseWriter.Type == options.WriteToFile && r.Request.Header.Get("Range") == "" {
+		return resp, fmt.Errorf("%w: asked for the whole file, received %s", ErrRangeMismatch, r.Header.Get("Content-Range"))
+	}
+
 	encoding := r.Header.Get("Content-Encoding")
 
 	// A resumed download appends to the partial file, so a partial response

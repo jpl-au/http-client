@@ -267,3 +267,38 @@ func TestResumeKeepsPartialFileOnErrorStatus(t *testing.T) {
 		t.Errorf("destination content = %q, want %q (an error body must not be published)", got, absent)
 	}
 }
+
+// TestFileOutputRejectsUnrequestedRange checks that a download that asks for
+// no range fails when the server answers with a range, and keeps the
+// destination, because the range is not the whole file.
+func TestFileOutputRejectsUnrequestedRange(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-3/8")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("abcd"))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "download.bin")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Get(server.URL, options.New().SetFileOutput(path))
+	if !errors.Is(err, client.ErrRangeMismatch) {
+		t.Fatalf("Get() error = %v, want %v", err, client.ErrRangeMismatch)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusPartialContent)
+	}
+	if got := contentOrAbsent(t, path); got != "old" {
+		t.Errorf("destination = %q, want %q", got, "old")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("directory holds %d entries, want only the destination", len(entries))
+	}
+}
