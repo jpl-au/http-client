@@ -23,7 +23,7 @@ type FileConfig struct {
 // It checks that the file exists and is accessible, stores the filename
 // and size, infers the content type, and sets Content-Disposition headers.
 // The file is NOT opened - use OpenFile() to get a fresh file handle.
-func (opt *Option) PrepareFile(filename string) error {
+func (opt *Option) PrepareFile(filename string) (err error) {
 	fileinfo, err := os.Stat(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -42,7 +42,7 @@ func (opt *Option) PrepareFile(filename string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %v", err)
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 
 	if err := opt.inferContentType(file, fileinfo); err != nil {
 		return fmt.Errorf("failed to infer content type: %w", err)

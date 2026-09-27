@@ -77,7 +77,7 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 	resp.Populate(first, s.start)
 	cr, err := s.parseRange(first, 0, -1, -1)
 	if err != nil {
-		first.Body.Close()
+		closeBody(s.opt, first.Body)
 		return resp, err
 	}
 	validator := options.StrongValidator(first.Header)
@@ -87,12 +87,12 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 
 	writer, err := s.opt.InitialiseWriter()
 	if err != nil {
-		first.Body.Close()
+		closeBody(s.opt, first.Body)
 		return resp, fmt.Errorf("failed to initialise writer: %w", err)
 	}
 	file, ok := writer.(*options.FileWriter)
 	if !ok {
-		first.Body.Close()
+		closeBody(s.opt, first.Body)
 		return resp, errors.Join(fmt.Errorf("segmented download has writer %T, want a file", writer), writer.Close())
 	}
 	s.firstRange = cr
@@ -130,9 +130,7 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 // still returns what the server sent.
 func (s *segmented) fetchAll(resp response.Response) (response.Response, error) {
 	resp.Populate(s.first, s.start)
-	if err := s.first.Body.Close(); err != nil {
-		s.opt.Log("failed to close first segment", "error", err)
-	}
+	closeBody(s.opt, s.first.Body)
 	req := s.template.Clone(s.template.Context())
 	req.Header.Del("Range")
 	r, err := s.client.Do(req)
@@ -153,14 +151,14 @@ func (s *segmented) fetchAll(resp response.Response) (response.Response, error) 
 func (s *segmented) fetchRemaining() error {
 	first, total := s.first, s.firstRange.Total
 	if err := s.file.Truncate(total); err != nil {
-		first.Body.Close()
+		closeBody(s.opt, first.Body)
 		return fmt.Errorf("failed to size segmented download: %w", err)
 	}
 
 	ctx, cancel := context.WithCancelCause(first.Request.Context())
 	defer cancel(nil)
 	// The first body belongs to the parent context, so close it to stop it.
-	stop := context.AfterFunc(ctx, func() { first.Body.Close() })
+	stop := context.AfterFunc(ctx, func() { closeBody(s.opt, first.Body) })
 	defer stop()
 
 	var wg sync.WaitGroup
@@ -195,20 +193,20 @@ func (s *segmented) fetch(ctx context.Context, from, to int64) error {
 	}
 	switch {
 	case r.StatusCode == http.StatusOK:
-		r.Body.Close()
+		closeBody(s.opt, r.Body)
 		return fmt.Errorf("%w: the file changed on the server during the download", ErrRangeMismatch)
 	case r.StatusCode != http.StatusPartialContent:
-		r.Body.Close()
+		closeBody(s.opt, r.Body)
 		return fmt.Errorf("segment %d-%d failed: %s", from, to, r.Status)
 	}
 	// A server that ignores If-Range sends a range of whichever version is
 	// current, so compare every validator the responses carry.
 	if err := checkVersion(r.Header, s.first.Header.Get("ETag"), s.first.Header.Get("Last-Modified")); err != nil {
-		r.Body.Close()
+		closeBody(s.opt, r.Body)
 		return err
 	}
 	if _, err := s.parseRange(r, from, to, s.firstRange.Total); err != nil {
-		r.Body.Close()
+		closeBody(s.opt, r.Body)
 		return err
 	}
 	return s.write(r, from, to)
@@ -217,7 +215,7 @@ func (s *segmented) fetch(ctx context.Context, from, to int64) error {
 // write writes the body of r, which holds the bytes from offset from to
 // offset to, to the file at offset from, and checks its Content-Digest.
 func (s *segmented) write(r *http.Response, from, to int64) error {
-	defer r.Body.Close()
+	defer closeBody(s.opt, r.Body)
 
 	var body io.Reader = r.Body
 	var digest *checksum

@@ -182,7 +182,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		httpResp.Header.Get("Location") != "" &&
 		last.Body != nil && last.Body != http.NoBody && last.GetBody == nil {
 		resp.Populate(httpResp, start)
-		httpResp.Body.Close()
+		closeBody(opt, httpResp.Body)
 		return resp, ErrPayloadNotReplayable
 	}
 
@@ -509,6 +509,7 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 	}
 
 	closeErr := compressor.Close()
+	// CloseWithError and Close always return nil.
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		pw.CloseWithError(err)
 		return
@@ -519,7 +520,7 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 // processResponse handles the final response processing including decompression
 // and body reading.
 func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time, sum *checksum) (response.Response, error) {
-	defer r.Body.Close()
+	defer closeBody(opt, r.Body)
 
 	// Record what was received before reading the body, so a response that
 	// fails later still has its status and headers.
@@ -615,7 +616,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	if err != nil {
 		return resp, fmt.Errorf("failed to create decompressed reader: %w", err)
 	}
-	defer decompressedBody.Close()
+	defer closeBody(opt, decompressedBody)
 
 	// A file destination receives only a successful response. Any other
 	// response goes to a buffer, so the caller can read the error body and
@@ -735,6 +736,15 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 
 	return resp, nil
+}
+
+// closeBody closes body and logs the error. A body is closed once the result
+// of the request is known, and an error closing it does not change that
+// result.
+func closeBody(opt *options.Option, body io.Closer) {
+	if err := body.Close(); err != nil {
+		opt.Log("failed to close body", "error", err)
+	}
 }
 
 // hasBody reports whether r can carry a body. A response to HEAD, and a 1xx,

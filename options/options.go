@@ -370,11 +370,11 @@ func (opt *Option) SetStallTimeout(timeout time.Duration) *Option {
 // do not change this Option. To turn a setting off through Merge, use its setter,
 // such as DisableRedirects or OnDownloadProgress(nil).
 //
-// Three kinds of setting are exceptions. Headers and cookies from the source are
-// added, so ClearHeaders and ClearCookies on the source do not remove this
-// Option's. Buffer sizes are copied only when set, because their setters ignore
-// sizes that are not positive. The client selection (SetClient, UseSharedClient,
-// UsePerRequestClient) is not merged.
+// Merge handles three groups of settings differently. It adds the source's
+// headers and cookies to this Option's, so ClearHeaders and ClearCookies on the
+// source do not remove them. It copies buffer sizes only when the source sets
+// them, because their setters ignore sizes that are not positive. It does not
+// merge the client selection (SetClient, UseSharedClient, UsePerRequestClient).
 func (opt *Option) Merge(src *Option) *Option {
 	if src == nil || src == opt {
 		return opt
