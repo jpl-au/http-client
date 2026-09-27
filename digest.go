@@ -21,15 +21,16 @@ var digestAlgorithms = []struct {
 
 // serverDigest returns the checksum a server sent for r in a Repr-Digest or
 // Content-Digest header, or nil when there is none to check. A 200 response
-// holds the whole representation, so either header applies. A resumed download
-// is checked as a whole file against Repr-Digest. Any other range response is
-// checked against Content-Digest, which covers only the bytes it holds.
-func serverDigest(r *http.Response, resuming bool) *checksum {
+// holds the whole representation, so either header applies. A range response
+// that completes a whole file, as a resumed or segmented download does, is
+// checked against Repr-Digest. Any other range response is checked against
+// Content-Digest, which covers only the bytes it holds.
+func serverDigest(r *http.Response, whole bool) *checksum {
 	var headers []string
 	switch {
 	case r.StatusCode == http.StatusOK:
 		headers = []string{"Repr-Digest", "Content-Digest"}
-	case r.StatusCode == http.StatusPartialContent && resuming:
+	case r.StatusCode == http.StatusPartialContent && whole:
 		headers = []string{"Repr-Digest"}
 	case r.StatusCode == http.StatusPartialContent:
 		headers = []string{"Content-Digest"}

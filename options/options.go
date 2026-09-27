@@ -53,6 +53,7 @@ type Option struct {
 	StallTimeout    time.Duration     // Longest time a request may go with no data sent or received. Zero or less means no limit.
 	Checksum        ChecksumConfig    // Checksum a downloaded body must match
 	SkipDigestCheck bool              // Do not check the checksum a server sends in a Repr-Digest or Content-Digest header
+	Segments        int               // Number of segments a file download is split into. One or less means one request.
 	Progress        ProgressConfig    // Progress tracking configuration
 	Range           RangeConfig       // Range request configuration for partial downloads
 	explicit        settings          // Settings chosen through a setter, which Merge copies even when zero
@@ -84,6 +85,7 @@ const (
 	settingStallTimeout
 	settingChecksum
 	settingDigestCheck
+	settingSegments
 )
 
 // has reports whether s includes setting.
@@ -450,6 +452,9 @@ func (opt *Option) Merge(src *Option) *Option {
 	if src.SkipDigestCheck || src.explicit.has(settingDigestCheck) {
 		opt.SkipDigestCheck = src.SkipDigestCheck
 	}
+	if src.Segments != 0 || src.explicit.has(settingSegments) {
+		opt.Segments = src.Segments
+	}
 
 	// Merge compression config
 	if src.Compression.Type != CompressionNone || src.explicit.has(settingCompression) {
@@ -572,6 +577,7 @@ func (opt *Option) Clone() *Option {
 	clone.StallTimeout = opt.StallTimeout
 	clone.Checksum = opt.Checksum
 	clone.SkipDigestCheck = opt.SkipDigestCheck
+	clone.Segments = opt.Segments
 	clone.File = opt.File
 	clone.Range = opt.Range
 

@@ -264,7 +264,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetMaxBodySize(1024).
 			SetStallTimeout(time.Second).
 			SetChecksum(sha256.New, "00").
-			DisableDigestCheck()
+			DisableDigestCheck().
+			SetSegments(4)
 	}
 
 	t.Run("default source keeps the settings", func(t *testing.T) {
@@ -298,6 +299,9 @@ func TestMergeResetSetters(t *testing.T) {
 		if !dest.SkipDigestCheck {
 			t.Error("SkipDigestCheck = false, want true")
 		}
+		if dest.Segments != 4 {
+			t.Errorf("Segments = %d, want 4", dest.Segments)
+		}
 	})
 
 	t.Run("reset setters clear the settings", func(t *testing.T) {
@@ -311,7 +315,8 @@ func TestMergeResetSetters(t *testing.T) {
 			SetMaxBodySize(0).
 			SetStallTimeout(0).
 			SetChecksum(nil, "").
-			EnableDigestCheck())
+			EnableDigestCheck().
+			SetSegments(0))
 
 		if dest.Context != nil {
 			t.Errorf("Context = %v, want nil", dest.Context)
@@ -339,6 +344,9 @@ func TestMergeResetSetters(t *testing.T) {
 		}
 		if dest.SkipDigestCheck {
 			t.Error("SkipDigestCheck = true, want false")
+		}
+		if dest.Segments != 0 {
+			t.Errorf("Segments = %d, want 0", dest.Segments)
 		}
 	})
 }

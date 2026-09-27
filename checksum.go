@@ -51,6 +51,19 @@ func (c *checksum) check() error {
 	}
 }
 
+// hashFile adds the whole file at path to the checksum.
+func (c *checksum) hashFile(path string) (err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file for checksum: %w", err)
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	if _, err := io.Copy(c.hash, file); err != nil {
+		return fmt.Errorf("failed to read file for checksum: %w", err)
+	}
+	return nil
+}
+
 // hashPartialFile adds the first size bytes of the partial file for dest to
 // the checksum, so a resumed download is checked as a whole file.
 func (c *checksum) hashPartialFile(dest string, size int64) (err error) {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,13 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		return resp, err
 	}
 
+	// A segmented download's segments are counted in bytes of the file, so
+	// they must not be encoded.
+	split := segmented(method, opt)
+	if split {
+		opt.Header.Set("Accept-Encoding", "identity")
+	}
+
 	source, err := preparePayload(payload, opt)
 	if err != nil {
 		return resp, err
@@ -126,6 +134,9 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 	req, err := prepareRequest(method, url, source, opt)
 	if err != nil {
 		return resp, err
+	}
+	if split {
+		req.Header.Set("Range", "bytes=0-"+strconv.Itoa(segmentMin-1))
 	}
 	if req.Body != nil {
 		// The transport closes the body, but may do so after Do returns.
@@ -168,6 +179,10 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		resp.PopulateResponse(httpResp, start)
 		httpResp.Body.Close()
 		return resp, ErrPayloadNotReplayable
+	}
+
+	if split {
+		return downloadSegments(client, httpResp, resp, opt, start, sum)
 	}
 
 	// Process final response

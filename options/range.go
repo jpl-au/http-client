@@ -3,7 +3,8 @@ package options
 import (
 	"fmt"
 	"net/http"
-	"time"
+
+	"github.com/jpl-au/http-client/internal/validator"
 )
 
 // RangeConfig holds configuration for HTTP Range requests (RFC 7233).
@@ -126,7 +127,9 @@ func (opt *Option) SetRangeLast(n int64) *Option {
 // If-Range, so if the resource has changed, the server sends it whole and the
 // partial file starts again. When from has no strong validator, nothing proves
 // the partial file belongs to the current resource, and the download starts
-// from the beginning. See resumeValidator for the rules.
+// from the beginning. A strong ETag is used when present. A date is used only
+// when the response has no ETag at all, and only when its Date is at least one
+// second after its Last-Modified (RFC 9110, section 8.8.2.2).
 //
 // If the partial file doesn't exist or is empty, the download starts from the beginning.
 // Resumed downloads ask for the identity encoding and reject encoded responses
@@ -148,58 +151,13 @@ func (opt *Option) Resume(filepath string, from http.Header) *Option {
 	opt.mu.Lock()
 	opt.Range = RangeConfig{
 		IsResume:     true,
-		Validator:    resumeValidator(from),
+		Validator:    validator.Strong(from),
 		ETag:         from.Get("ETag"),
 		LastModified: from.Get("Last-Modified"),
 	}
 	opt.explicit |= settingRange
 	opt.mu.Unlock()
 	return opt
-}
-
-// resumeValidator returns the value to send as If-Range for a partial file
-// that came from a response with header from, or "" when it has no strong
-// validator (RFC 9110, section 13.1.5).
-//
-// A strong ETag is used when present. A date is used only when the response
-// has no ETag at all, and only when it is strong: the response's Date must be
-// at least one second after its Last-Modified (RFC 9110, section 8.8.2.2).
-// A header that does not parse gives no validator.
-func resumeValidator(from http.Header) string {
-	if etag := from.Get("ETag"); etag != "" {
-		if isStrongETag(etag) {
-			return etag
-		}
-		return ""
-	}
-
-	modified, err := http.ParseTime(from.Get("Last-Modified"))
-	if err != nil {
-		return ""
-	}
-	date, err := http.ParseTime(from.Get("Date"))
-	if err != nil {
-		return ""
-	}
-	if date.Sub(modified) < time.Second {
-		return ""
-	}
-	return from.Get("Last-Modified")
-}
-
-// isStrongETag reports whether v is a strong entity tag: a quoted string of
-// etagc characters (RFC 9110, section 8.8.3).
-func isStrongETag(v string) bool {
-	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
-		return false
-	}
-	for i := 1; i < len(v)-1; i++ {
-		c := v[i]
-		if c != 0x21 && (c < 0x23 || c > 0x7e) && c < 0x80 {
-			return false
-		}
-	}
-	return true
 }
 
 // PartialPath returns the path of the partial file that Resume keeps for the
@@ -223,4 +181,31 @@ func (opt *Option) HasRange() bool {
 	isSet := opt.Range.IsSet
 	opt.mu.RUnlock()
 	return isSet
+}
+
+// SetSegments splits a file download into n segments that download at the same
+// time, which can be faster from a server that limits the speed of each
+// connection. It applies only to a GET request with file output. A resumed
+// download is not split. A number of one or less, the default, downloads the
+// file in one request.
+//
+// The first request asks for the first segment, and its response gives the
+// file's size. When the server does not support range requests, the first
+// response holds the whole file and the download finishes as one request.
+// When the response has no strong validator, nothing proves that the segments
+// come from one version of the file, so the file is downloaded again in one
+// request. Every other segment asks for the version of the first response,
+// and a download fails with an error that wraps client.ErrRangeMismatch when
+// the file changes on the server. Each segment has at least 1 MiB.
+//
+// The segments are written to a temporary file that replaces the destination
+// only when every segment is complete, so a failed download leaves the
+// destination as it was. The response describes the whole file, with the
+// status 200 OK.
+func (opt *Option) SetSegments(n int) *Option {
+	opt.mu.Lock()
+	opt.Segments = n
+	opt.explicit |= settingSegments
+	opt.mu.Unlock()
+	return opt
 }

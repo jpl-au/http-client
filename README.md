@@ -254,6 +254,28 @@ resp, err := client.Get(url, opt)
 
 The body is written to a temporary file beside the destination and renamed into place only when it has arrived in full, so a failed download leaves the destination as it was. A replaced file keeps its permissions, and a new file follows the process umask. Only a 2xx response is written to the file. Any other response is returned in the response buffer with no error, so check `resp.StatusCode`.
 
+### Downloading in segments
+
+`SetSegments` splits a file download into segments that download at the same time. This can be faster from a server that limits the speed of each connection:
+
+```go
+opt := options.New().
+    SetFileOutput("/path/to/file.iso").
+    SetSegments(4) // Up to 4 requests at the same time
+
+resp, err := client.Get(url, opt)
+```
+
+The first request asks for the first 1 MiB, and the server's reply gives the file's size. The rest of the file is split into segments of at least 1 MiB, so a small file is not split. Each segment asks for the same version of the file as the first reply. If the file changes on the server during the download, the download fails with `client.ErrRangeMismatch`.
+
+- A server that does not support range requests sends the whole file in its first reply, and the download finishes as one request.
+- A reply with no strong validator, such as an `ETag`, cannot prove that all segments come from one version of the file, so the file is downloaded again in one request.
+- If any segment fails, the other segments stop and the destination is left as it was.
+- Progress adds up all segments, and the progress callback never runs twice at the same time.
+- `SetChecksum` and a server's `Repr-Digest` are checked against the whole file.
+- The response describes the whole file, with the status `200 OK`.
+- A resumed download is not split. Segments apply only to a GET request with file output. `SetSegments(0)` or `SetSegments(1)` downloads in one request, which is the default.
+
 ## Limiting Buffered Responses
 
 A body held in memory has no size limit by default. Set one to protect against unexpectedly large responses:

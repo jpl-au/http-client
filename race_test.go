@@ -189,6 +189,7 @@ func TestOptionMethodsRace(t *testing.T) {
 				opt.SetChecksum(sha256.New, "00")
 				opt.DisableDigestCheck()
 				opt.EnableDigestCheck()
+				opt.SetSegments(4)
 			}
 		})
 
