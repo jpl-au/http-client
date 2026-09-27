@@ -235,8 +235,8 @@ func (opt *Option) HasRange() bool {
 
 // SetSegments splits a file download into n segments that download at the same
 // time, which can be faster from a server that limits the speed of each
-// connection. It applies only to a GET request with file output. A resumed
-// download is not split. A number of one or less, the default, downloads the
+// connection. It applies only to a GET request with file output and no
+// payload. A resumed download is not split. A number of one or less, the default, downloads the
 // file in one request.
 //
 // The first request asks for the first segment, and its response gives the

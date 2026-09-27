@@ -400,6 +400,23 @@ func TestOption_SetSegments(t *testing.T) {
 		}
 	})
 
+	// A request with a body is not split, because its body can be sent only
+	// once.
+	t.Run("request with body is not split", func(t *testing.T) {
+		server := newSegmentServer(t, segmentConfig{content: same(largefile.Bytes()), etag: same(`"v1"`)})
+		path := filepath.Join(t.TempDir(), "download.bin")
+
+		if _, err := client.Custom(http.MethodGet, server.URL, "payload", options.New().SetFileOutput(path).SetSegments(4)); err != nil {
+			t.Fatalf("Custom() error = %v", err)
+		}
+		if got := server.requests(); len(got) != 1 || got[0] != "" {
+			t.Errorf("Range headers = %q, want one request with no range", got)
+		}
+		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, largefile.Bytes()) {
+			t.Errorf("file does not match the content served (error %v)", err)
+		}
+	})
+
 	// A download whose first response has a date validator fails when a later
 	// segment comes from a version with another Last-Modified, even from a
 	// server that ignores If-Range.

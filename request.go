@@ -119,7 +119,7 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 
 	// A segmented download's segments are counted in bytes of the file, so
 	// they must not be encoded.
-	segments := newSegmented(method, client, opt, sum, start)
+	segments := newSegmented(method, payload, client, opt, sum, start)
 	if segments != nil {
 		opt.Header.Set("Accept-Encoding", "identity")
 	}

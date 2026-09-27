@@ -288,7 +288,7 @@ The first request asks for the first 1 MiB, and the server's reply gives the fil
 - Progress adds up all segments, and the progress callback never runs twice at the same time.
 - `SetChecksum` and a server's `Repr-Digest` are checked against the whole file.
 - The response describes the whole file, with the status `200 OK`.
-- A resumed download is not split. Segments apply only to a GET request with file output. `SetSegments(0)` or `SetSegments(1)` downloads in one request, which is the default.
+- A resumed download is not split. Segments apply only to a GET request with file output and no payload, because a payload can be sent only once. `SetSegments(0)` or `SetSegments(1)` downloads in one request, which is the default.
 
 ## Limiting Buffered Responses
 
