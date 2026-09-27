@@ -23,6 +23,23 @@
 //
 //	resp, err := client.Post(url, payload, opt)
 //
+// # Payloads
+//
+// Post, Put, Patch and Custom take the request body as a payload. The payload's
+// type decides how it is sent:
+//   - nil sends no body.
+//   - []byte, string and *bytes.Buffer are sent as they are.
+//   - An io.Reader is read to the end. A reader that is also an io.Seeker can
+//     be sent again after a 307 or 308 redirect.
+//   - An *os.File is opened again by name, so it can be sent again after a
+//     redirect.
+//   - url.Values is sent URL-encoded, with the Content-Type
+//     application/x-www-form-urlencoded.
+//
+// For example:
+//
+//	resp, err := client.Post(url, url.Values{"name": {"Ada"}, "tag": {"a", "b"}})
+//
 // # Reusable Client
 //
 // For connection pooling and shared configuration, use [Client]:

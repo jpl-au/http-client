@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -339,6 +340,9 @@ func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 			return nil, err
 		}
 		payload = nil
+	case url.Values:
+		opt.AddHeader(ContentType, URLencoded)
+		payload = v.Encode()
 	case multipartForm:
 		body, contentType, err := v.encode()
 		if err != nil {

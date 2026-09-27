@@ -61,6 +61,22 @@ opt := options.New().
 resp, err := client.Post(url, payload, opt)
 ```
 
+## Payloads
+
+`Post`, `Put`, `Patch` and `Custom` take the request body as a payload. The payload's type decides how it is sent:
+
+| Payload | Sent as |
+|---|---|
+| `nil` | No body |
+| `[]byte`, `string`, `*bytes.Buffer` | The bytes as they are |
+| `io.Reader` | Read to the end. A reader that is also an `io.Seeker` can be sent again after a 307 or 308 redirect |
+| `*os.File` | The file, opened again by name so it can be sent again after a redirect |
+| `url.Values` | URL-encoded, with the `Content-Type` `application/x-www-form-urlencoded` |
+
+```go
+resp, err := client.Post(url, url.Values{"name": {"Ada"}, "tag": {"a", "b"}})
+```
+
 ## File Uploads
 
 ### Using PrepareFile (recommended)

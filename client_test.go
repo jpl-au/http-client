@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,75 +16,50 @@ import (
 	"github.com/jpl-au/http-client/response"
 )
 
-// TestClientFormDataMethods tests the Client struct's FormData methods
-func TestClientFormDataMethods(t *testing.T) {
-	server := setupTestServer(t)
+// TestFormValues checks that a url.Values payload is sent URL-encoded, with its
+// content type and repeated keys, by every method that takes a payload.
+func TestFormValues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Echo-Content-Type", r.Header.Get("Content-Type"))
+		w.Header().Set("Echo-X-Custom", r.Header.Get("X-Custom"))
+		_, _ = w.Write([]byte(r.PostForm.Encode()))
+	}))
 	defer server.Close()
 
+	values := url.Values{"name": {"Ada"}, "tag": {"a", "b"}}
 	c := client.New()
-
 	tests := []struct {
-		name   string
-		method string
+		name string
+		send func(url string, payload any, opts ...*options.Option) (response.Response, error)
 	}{
-		{"PostFormData", "POST"},
-		{"PutFormData", "PUT"},
-		{"PatchFormData", "PATCH"},
+		{"Post", client.Post},
+		{"Put", client.Put},
+		{"Patch", client.Patch},
+		{"Client.Post", c.Post},
+		{"Client.Put", c.Put},
+		{"Client.Patch", c.Patch},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload := map[string]string{
-				"field1": "value1",
-				"field2": "value2",
-			}
-
-			var resp response.Response
-			var err error
-
-			switch tt.method {
-			case "POST":
-				resp, err = c.PostFormData(server.URL+"/echo-headers", payload)
-			case "PUT":
-				resp, err = c.PutFormData(server.URL+"/echo-headers", payload)
-			case "PATCH":
-				resp, err = c.PatchFormData(server.URL+"/echo-headers", payload)
-			}
-
+			resp, err := tt.send(server.URL, values, options.New().AddHeader("X-Custom", "yes"))
 			if err != nil {
 				t.Fatalf("%s() error = %v", tt.name, err)
 			}
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+			if got, want := resp.String(), values.Encode(); got != want {
+				t.Errorf("received form = %q, want %q", got, want)
 			}
-
-			// Verify the Content-Type header was set correctly (echoed back by server)
 			if got, want := resp.Header.Get("Echo-Content-Type"), "application/x-www-form-urlencoded"; got != want {
-				t.Errorf("Header.Get(%q) = %q, want %q", "Echo-Content-Type", got, want)
+				t.Errorf("Content-Type = %q, want %q", got, want)
+			}
+			if got := resp.Header.Get("Echo-X-Custom"); got != "yes" {
+				t.Errorf("X-Custom = %q, want %q", got, "yes")
 			}
 		})
-	}
-}
-
-// TestClientFormDataWithOptions tests that Client FormData methods properly handle options
-func TestClientFormDataWithOptions(t *testing.T) {
-	server := setupTestServer(t)
-	defer server.Close()
-
-	c := client.New()
-
-	// Test with custom options
-	opt := options.New()
-	opt.AddHeader("X-Custom-Header", "test-value")
-
-	payload := map[string]string{"key": "value"}
-
-	resp, err := c.PostFormData(server.URL+"/echo", payload, opt)
-	if err != nil {
-		t.Fatalf("PostFormData() error = %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
 
@@ -191,12 +167,12 @@ func TestClientPerRequestOptionKeepsGlobalSettings(t *testing.T) {
 		t.Errorf("Get() with the global EnableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	resp, err = c.PostFormData(server.URL+"/upload/no-preserve", map[string]string{"k": "v"})
+	resp, err = c.Post(server.URL+"/upload/no-preserve", url.Values{"k": {"v"}})
 	if err != nil {
-		t.Fatalf("PostFormData() error = %v", err)
+		t.Fatalf("Post() error = %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("PostFormData() with the global EnableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+		t.Errorf("Post() with the global EnableRedirects: StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
 	resp, err = c.Get(server.URL+"/upload/no-preserve", options.New().DisableRedirects())

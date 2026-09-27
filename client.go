@@ -117,25 +117,11 @@ func (c *Client) Get(url string, opts ...*options.Option) (response.Response, er
 
 // Post performs an HTTP POST to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
+// The package documentation lists the payload types.
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Post(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPost, url, payload, opts...)
-}
-
-// PostFormData performs an HTTP POST as an x-www-form-urlencoded payload to the specified URL.
-// It accepts the URL string as its first argument and a map[string]string the payload.
-// The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional Options to customize the request.
-// Returns the HTTP response and an error if any.
-func (c *Client) PostFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	opt.AddHeader(ContentType, URLencoded)
-
-	return c.Post(url, encodeFormData(payload), opt)
 }
 
 // PostFile uploads a file to the specified URL using an HTTP POST request.
@@ -149,25 +135,11 @@ func (c *Client) PostFile(url string, filename string, opts ...*options.Option) 
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
+// The package documentation lists the payload types.
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Put(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPut, url, payload, opts...)
-}
-
-// PutFormData performs an HTTP PUT as an x-www-form-urlencoded payload to the specified URL.
-// It accepts the URL string as its first argument and a map[string]string the payload.
-// The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional Options to customize the request.
-// Returns the HTTP response and an error if any.
-func (c *Client) PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	opt.AddHeader(ContentType, URLencoded)
-
-	return c.Put(url, encodeFormData(payload), opt)
 }
 
 // PutFile uploads a file to the specified URL using an HTTP PUT request.
@@ -181,25 +153,11 @@ func (c *Client) PutFile(url string, filename string, opts ...*options.Option) (
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
+// The package documentation lists the payload types.
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Patch(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPatch, url, payload, opts...)
-}
-
-// PatchFormData performs an HTTP PATCH as an x-www-form-urlencoded payload to the specified URL.
-// It accepts the URL string as its first argument and a map[string]string the payload.
-// The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional Options to customize the request.
-// Returns the HTTP response and an error if any.
-func (c *Client) PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New()
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-	opt.AddHeader(ContentType, URLencoded)
-
-	return c.Patch(url, encodeFormData(payload), opt)
 }
 
 // PatchFile uploads a file to the specified URL using an HTTP PATCH request.

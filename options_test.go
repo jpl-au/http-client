@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -193,9 +194,9 @@ func TestPackageFunctionsLeaveOptionUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = client.PostFormData(server.URL+"/echo", map[string]string{"k": "v"}, opt)
+	_, err = client.Post(server.URL+"/echo", url.Values{"k": {"v"}}, opt)
 	if err != nil {
-		t.Fatalf("PostFormData() error = %v", err)
+		t.Fatalf("Post() error = %v", err)
 	}
 	_, err = client.PostFile(server.URL+"/upload", smallf, opt)
 	if err != nil {
