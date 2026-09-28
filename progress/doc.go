@@ -1,11 +1,11 @@
 // Package progress provides utilities for displaying progress bars in the terminal.
 //
-// [Func] returns a progress callback that displays upload or download progress
+// [Terminal] returns a progress callback that displays upload or download progress
 // in the terminal.
 //
 // # Basic Usage
 //
-//	opt := options.New().OnDownloadProgress(progress.Func())
+//	opt := options.New().OnDownloadProgress(progress.Terminal())
 //	resp, err := client.Get(url, opt)
 //
 // # Terminal Width

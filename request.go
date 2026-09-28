@@ -337,7 +337,7 @@ func preparePayload(payload any, opt *options.Option) (*payloadSource, error) {
 				}
 				return file, nil
 			},
-			length:     opt.Size(),
+			length:     opt.FileSize(),
 			replayable: true,
 		}, nil
 	}

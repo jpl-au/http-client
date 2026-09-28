@@ -170,7 +170,7 @@ The total is -1 when the size is not known.
 The `progress` package has a ready-made callback that shows the percentage, speed and time remaining in the terminal:
 
 ```go
-opt := options.New().OnDownloadProgress(progress.Func())
+opt := options.New().OnDownloadProgress(progress.Terminal())
 ```
 
 ## Redirect Handling
@@ -391,10 +391,10 @@ c.SetHistory(nil) // Stop recording
 opts := c.GlobalOptions()
 
 // Add to the global options, keeping the existing settings
-c.AddGlobalOptions(options.New().AddHeader("X-New-Header", "value"))
+c.MergeGlobalOptions(options.New().AddHeader("X-New-Header", "value"))
 
 // Replace the global options
-c.UpdateGlobalOptions(options.New().AddHeader("Authorization", "Bearer new-token"))
+c.SetGlobalOptions(options.New().AddHeader("Authorization", "Bearer new-token"))
 
 // Copy the global options to change them for one request
 opt := c.CloneOptions()

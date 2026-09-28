@@ -80,18 +80,18 @@ func (opt *Option) HasFile() bool {
 	return hasFile
 }
 
-// Size returns the size in bytes of the prepared file.
+// FileSize returns the size in bytes of the prepared file.
 // Returns 0 if no file has been prepared.
-func (opt *Option) Size() int64 {
+func (opt *Option) FileSize() int64 {
 	opt.mu.RLock()
 	size := opt.File.size
 	opt.mu.RUnlock()
 	return size
 }
 
-// Filename returns the path of the prepared file.
+// FilePath returns the path of the prepared file.
 // Returns empty string if no file has been prepared.
-func (opt *Option) Filename() string {
+func (opt *Option) FilePath() string {
 	opt.mu.RLock()
 	path := opt.File.path
 	opt.mu.RUnlock()

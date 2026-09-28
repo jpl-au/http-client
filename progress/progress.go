@@ -19,12 +19,12 @@ func terminalWidth() int {
 	return width
 }
 
-// Func returns a progress callback that displays upload or download progress
+// Terminal returns a progress callback that displays upload or download progress
 // in the terminal: the percentage completed, the speed, and the estimated time
 // remaining (ETA). Pass it to Option.OnUploadProgress or
 // Option.OnDownloadProgress. Updates are shown at most every 100 milliseconds,
 // but an update that reaches the known total is always shown.
-func Func() func(int64, int64) {
+func Terminal() func(int64, int64) {
 	var lastUpdate time.Time // Tracks the last time the progress was updated
 	var lastBytes int64      // Tracks the number of bytes processed during the last update
 

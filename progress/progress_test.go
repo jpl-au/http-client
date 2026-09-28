@@ -10,7 +10,7 @@ import (
 	"github.com/jpl-au/http-client/progress"
 )
 
-// output calls a new Func callback with each pair of byte counts in turn
+// output calls a new Terminal callback with each pair of byte counts in turn
 // and returns what it printed.
 func output(t *testing.T, updates ...[2]int64) string {
 	t.Helper()
@@ -26,7 +26,7 @@ func output(t *testing.T, updates ...[2]int64) string {
 	stdout := os.Stdout
 	os.Stdout = w
 	defer func() { os.Stdout = stdout }()
-	report := progress.Func()
+	report := progress.Terminal()
 	for _, u := range updates {
 		report(u[0], u[1])
 	}
@@ -40,7 +40,7 @@ func output(t *testing.T, updates ...[2]int64) string {
 	return string(data)
 }
 
-func TestFunc(t *testing.T) {
+func TestTerminal(t *testing.T) {
 	// The final update is shown even when it comes straight after another,
 	// so the display does not stop short of 100%.
 	t.Run("final update shown", func(t *testing.T) {

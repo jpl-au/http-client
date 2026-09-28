@@ -35,13 +35,13 @@ func TestConcurrentAccess(t *testing.T) {
 				for range raceIterations {
 					newOpt := options.New()
 					newOpt.AddHeader("Iter", "Val")
-					c.AddGlobalOptions(newOpt)
+					c.MergeGlobalOptions(newOpt)
 				}
 			})
 
 			wg.Go(func() {
 				for range raceIterations {
-					c.UpdateGlobalOptions(options.New())
+					c.SetGlobalOptions(options.New())
 				}
 			})
 
@@ -72,8 +72,8 @@ func TestConcurrentAccess(t *testing.T) {
 					_ = opt.GenerateIdentifier()
 					_ = opt.ProgressTracking()
 					_ = opt.HasFile()
-					_ = opt.Size()
-					_ = opt.Filename()
+					_ = opt.FileSize()
+					_ = opt.FilePath()
 				}
 			})
 

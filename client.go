@@ -56,20 +56,20 @@ func (c *Client) GlobalOptions() *options.Option {
 	return global
 }
 
-// AddGlobalOptions merges the provided options into the client's existing global options.
+// MergeGlobalOptions merges the provided options into the client's existing global options.
 // This preserves existing settings while adding or overwriting specific values from opts.
-// Use UpdateGlobalOptions instead if you want to completely replace the global options.
-func (c *Client) AddGlobalOptions(opts *options.Option) {
+// Use SetGlobalOptions instead if you want to completely replace the global options.
+func (c *Client) MergeGlobalOptions(opts *options.Option) {
 	c.mu.RLock()
 	global := c.global
 	c.mu.RUnlock()
 	global.Merge(opts)
 }
 
-// UpdateGlobalOptions replaces the client's global options entirely with the provided options.
-// This discards all existing global settings. Use AddGlobalOptions instead if you want to
+// SetGlobalOptions replaces the client's global options entirely with the provided options.
+// This discards all existing global settings. Use MergeGlobalOptions instead if you want to
 // merge new settings while preserving existing ones.
-func (c *Client) UpdateGlobalOptions(opts *options.Option) {
+func (c *Client) SetGlobalOptions(opts *options.Option) {
 	c.mu.Lock()
 	c.global = opts
 	c.mu.Unlock()
