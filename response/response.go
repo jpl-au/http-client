@@ -128,9 +128,11 @@ func (r *Response) Populate(resp *http.Response, start time.Time) {
 	r.Uncompressed = resp.Uncompressed         // Set uncompressed flag
 	r.TLS = resp.TLS                           // Copy TLS connection state
 
-	// Check and record if the request was redirected
-	if resp.Request.URL.String() != r.URL {
-		r.Redirected = true
+	// Check and record if the request was redirected. r can already describe
+	// an earlier response, so both fields are set every time.
+	r.Redirected = resp.Request.URL.String() != r.URL
+	r.Location = ""
+	if r.Redirected {
 		r.Location = resp.Request.URL.String()
 	}
 
@@ -138,8 +140,10 @@ func (r *Response) Populate(resp *http.Response, start time.Time) {
 	r.AcceptRanges = resp.Header.Get("Accept-Ranges")
 	r.IsPartialContent = resp.StatusCode == http.StatusPartialContent
 
-	// An invalid header leaves ContentRange nil, as documented on the field.
+	// An absent or invalid header leaves ContentRange nil, as documented on
+	// the field, even when an earlier response had a range.
 	// ParseContentRange reports the reason to callers that need it.
+	r.ContentRange = nil
 	if cr, err := ParseContentRange(resp.Header.Get("Content-Range")); err == nil {
 		r.ContentRange = cr
 	}

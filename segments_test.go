@@ -570,6 +570,37 @@ func TestOption_SetSegments(t *testing.T) {
 		onlyFile(t, dir, "download.bin")
 	})
 
+	// The response to the request for the whole file replaces the first
+	// response, so it does not keep the first response's range.
+	t.Run("whole file response clears range", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No validator, so the first response cannot be split.
+			if r.Header.Get("Range") != "" {
+				w.Header().Set("Content-Range", "bytes 0-3/8")
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write([]byte("abcd"))
+				return
+			}
+			_, _ = w.Write([]byte("abcdefgh"))
+		}))
+		defer server.Close()
+		path := filepath.Join(t.TempDir(), "download.bin")
+
+		resp, err := client.Get(server.URL, options.New().SetFileOutput(path).SetSegments(2))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || resp.IsPartialContent {
+			t.Errorf("StatusCode = %d, IsPartialContent = %v, want %d and false", resp.StatusCode, resp.IsPartialContent, http.StatusOK)
+		}
+		if resp.ContentRange != nil {
+			t.Errorf("ContentRange = %+v, want nil", *resp.ContentRange)
+		}
+		if got := contentOrAbsent(t, path); got != "abcdefgh" {
+			t.Errorf("file = %q, want %q", got, "abcdefgh")
+		}
+	})
+
 	// Each request of a segmented download sends the cookie jar's cookies
 	// once, including the request for the whole file when the first response
 	// cannot be split.
@@ -646,6 +677,9 @@ func TestOption_SetSegments(t *testing.T) {
 		}
 		if got := resp.Header.Get("X-First"); got != "yes" {
 			t.Errorf("Header.Get(%q) = %q, want %q", "X-First", got, "yes")
+		}
+		if resp.ContentRange == nil || resp.ContentRange.Total != 0 {
+			t.Errorf("ContentRange = %+v, want the first response's range with total 0", resp.ContentRange)
 		}
 	})
 
