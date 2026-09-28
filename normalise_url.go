@@ -22,7 +22,7 @@ func normaliseURL(rawURL string, protocolScheme string) (string, error) {
 
 	// Add the scheme before parsing. net/url reads a URL without one as a
 	// path, and reads a host with a port, such as localhost:8080, as a scheme.
-	if !strings.Contains(rawURL, "://") {
+	if !hasScheme(rawURL) {
 		scheme := "https"
 		if protocolScheme != "" {
 			scheme = protocolScheme
@@ -45,4 +45,24 @@ func normaliseURL(rawURL string, protocolScheme string) (string, error) {
 	}
 
 	return parsed.String(), nil
+}
+
+// hasScheme reports whether rawURL starts with a scheme followed by "://".
+// Only the start counts: a URL in the path, query or fragment is not the
+// scheme of rawURL.
+func hasScheme(rawURL string) bool {
+	scheme, _, found := strings.Cut(rawURL, "://")
+	if !found || scheme == "" {
+		return false
+	}
+	// A scheme is a letter followed by letters, digits, "+", "-" or ".".
+	for i, c := range scheme {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case i > 0 && ('0' <= c && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
 }

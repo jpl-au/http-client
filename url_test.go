@@ -97,6 +97,41 @@ func TestNormaliseURL(t *testing.T) {
 		}
 	})
 
+	// A URL in the path, query or fragment is part of the address, not its
+	// scheme, so the address still gets the scheme.
+	t.Run("no scheme with embedded url uses set scheme", func(t *testing.T) {
+		var got string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.URL.RequestURI()
+		}))
+		defer server.Close()
+		host := strings.TrimPrefix(server.URL, "http://")
+
+		tests := []struct {
+			name string
+			path string
+			want string
+		}{
+			{"query", "/fetch?next=https://example.test/file", "/fetch?next=https://example.test/file"},
+			{"path", "/fetch/https://example.test/file", "/fetch/https://example.test/file"},
+			{"fragment", "/fetch#https://example.test/file", "/fetch"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := client.Get(host+tt.path, options.New().SetProtocolScheme("http"))
+				if err != nil {
+					t.Fatalf("Get() error = %v", err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				if got != tt.want {
+					t.Errorf("server received %q, want %q", got, tt.want)
+				}
+			})
+		}
+	})
+
 	t.Run("with scheme", func(t *testing.T) {
 		server := setupTestServer(t)
 		defer server.Close()
