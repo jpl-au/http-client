@@ -136,6 +136,7 @@ func createLike(name, dest string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The umask can narrow perm; the replacement must match dest exactly.
 	if exists {
 		if err := file.Chmod(perm); err != nil {
 			return nil, errors.Join(err, file.Close(), os.Remove(name))
@@ -179,6 +180,8 @@ func newWriter(cfg options.ResponseWriter, resume, continuation bool) (io.WriteC
 			}
 			return &partialWriter{File: file, path: cfg.FilePath, offset: offset}, nil
 		}
+		// The temporary file must be in the destination's directory:
+		// a rename across file systems fails.
 		file, err := createLike(cfg.FilePath+"."+rand.Text()+".part", cfg.FilePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create file: %w", err)

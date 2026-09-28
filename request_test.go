@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -300,6 +302,17 @@ func (c *blockingCompressor) Close() error {
 	return nil
 }
 
+// closeTrackingReader is a request body that records whether it was closed.
+type closeTrackingReader struct {
+	*strings.Reader
+	closed bool
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.closed = true
+	return nil
+}
+
 func TestFailedRequests(t *testing.T) {
 	// A failed request closes the compression pipe even when upload progress
 	// wraps it.
@@ -331,6 +344,31 @@ func TestFailedRequests(t *testing.T) {
 		case <-compressor.closed:
 		case <-time.After(5 * time.Second):
 			t.Fatal("the compressor is still blocked on the pipe after the request failed")
+		}
+	})
+
+	// A request that fails after its body is opened, here on an invalid
+	// checksum, closes the body and sends nothing.
+	t.Run("setup failure closes request body", func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+		}))
+		defer server.Close()
+		body := &closeTrackingReader{Reader: strings.NewReader("payload")}
+
+		resp, err := client.Post(server.URL, body, options.New().SetChecksum(sha256.New, "not hex"))
+		if err == nil || !strings.Contains(err.Error(), "invalid checksum") {
+			t.Fatalf("Post() error = %v, want an invalid checksum error", err)
+		}
+		if resp.Error != err {
+			t.Errorf("Response.Error = %v, want %v", resp.Error, err)
+		}
+		if !body.closed {
+			t.Error("request body was not closed")
+		}
+		if got := requests.Load(); got != 0 {
+			t.Errorf("server received %d requests, want 0", got)
 		}
 	})
 

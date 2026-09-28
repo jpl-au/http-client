@@ -3,12 +3,16 @@ package client_test
 import (
 	"context"
 	"crypto/sha256"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -314,6 +318,83 @@ func TestOptionReuse(t *testing.T) {
 		}
 		if opt.HasFile() {
 			t.Error("Option.HasFile() = true, want false (PostFile must not prepare a file on the caller's Option)")
+		}
+	})
+
+	// The Content-Type a payload sets belongs to that request only, so a later
+	// request that reuses the response's options with another payload does
+	// not send it.
+	t.Run("response options content type", func(t *testing.T) {
+		var types []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			types = append(types, r.Header.Get("Content-Type"))
+		}))
+		defer server.Close()
+
+		for _, payload := range []any{url.Values{"k": {"v"}}, form.New().Field("k", "v")} {
+			resp, err := client.Post(server.URL, payload, nil)
+			if err != nil {
+				t.Fatalf("Post() error = %v", err)
+			}
+			if got := resp.Options.Header.Get("Content-Type"); got != "" {
+				t.Errorf("Response.Options Content-Type = %q, want empty", got)
+			}
+			if _, err := client.Post(server.URL, []byte("data"), resp.Options); err != nil {
+				t.Fatalf("Post() with the response's options error = %v", err)
+			}
+		}
+		if len(types) != 4 || types[1] != "" || types[3] != "" {
+			t.Errorf("Content-Type headers = %q, want none on the requests that reuse the response's options", types)
+		}
+		if !strings.HasPrefix(types[0], "application/x-www-form-urlencoded") || !strings.HasPrefix(types[2], "multipart/form-data") {
+			t.Errorf("Content-Type headers = %q, want the payload's type on the first requests", types)
+		}
+	})
+
+	// A file a request uploads belongs to that request only, so a later
+	// request that reuses the response's options sends its own payload.
+	t.Run("response options file upload", func(t *testing.T) {
+		var bodies []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			bodies = append(bodies, string(body))
+		}))
+		defer server.Close()
+		path := filepath.Join(t.TempDir(), "upload.txt")
+		if err := os.WriteFile(path, []byte("file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := client.PostFile(server.URL, path, nil)
+		if err != nil {
+			t.Fatalf("PostFile() error = %v", err)
+		}
+		if resp.Options.HasFile() {
+			t.Error("Response.Options.HasFile() = true, want false")
+		}
+		if _, err := client.Post(server.URL, "payload", resp.Options); err != nil {
+			t.Fatalf("Post() with the response's options error = %v", err)
+		}
+		if want := []string{"file", "payload"}; !slices.Equal(bodies, want) {
+			t.Errorf("request bodies = %q, want %q", bodies, want)
+		}
+	})
+
+	// A stall timeout watches one request and ends with it, so a later
+	// request that reuses the response's options is not cancelled.
+	t.Run("response options stall timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
+
+		resp, err := client.Get(server.URL, options.New().SetStallTimeout(time.Second))
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if _, err := client.Get(server.URL, resp.Options); err != nil {
+			t.Errorf("Get() with the response's options error = %v", err)
 		}
 	})
 

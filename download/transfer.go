@@ -81,6 +81,9 @@ func New(req *http.Request, client *http.Client, opt *options.Option) (Transfer,
 		!opt.HasRange() {
 		req.Header.Set("Accept-Encoding", "identity")
 		req.Header.Set("Range", "bytes=0-"+strconv.Itoa(minSegmentSize-1))
+		// net/http adds the cookie jar's cookies to the request it sends, and
+		// adds them again to each new request. Later requests of a segmented
+		// download repeat a copy taken before that.
 		return &Segmented{
 			standard: base,
 			client:   client,

@@ -38,8 +38,12 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	// Work on a private copy: request setup adds headers and may prepare a
 	// file upload, and the caller may reuse their options for later requests.
 	opt := options.New(opts...).Clone()
+	// The response keeps a copy taken before the request writes into opt, so
+	// a caller can reuse the response's options for a later request.
+	configured := opt.Clone()
 	start := time.Now()
 	resp, err := send(method, url, payload, opt, start)
+	resp.Options = configured
 	resp.Error = err
 	resp.AccessTime = time.Since(start)
 	resp.ProcessedTime = time.Now().Unix()
@@ -371,7 +375,8 @@ func prepareRequest(method, url string, source *payloadSource, opt *options.Opti
 	}
 
 	// Build the body last: it opens the payload and may start the compression
-	// goroutine, so nothing after it may fail.
+	// goroutine, so nothing after it in this function may fail. The caller
+	// must close the body if a later step fails.
 	if source != nil {
 		if opt.Compression.Type != options.CompressionNone {
 			req.Header.Set("Transfer-Encoding", "chunked")
