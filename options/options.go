@@ -14,7 +14,7 @@ import (
 )
 
 // defaultUserAgent defines the default User-Agent string for requests
-const defaultUserAgent = "jpl-au/http-client/v0.1.0"
+const defaultUserAgent = "http-client/0.2.0"
 
 // Common errors returned by Option methods
 var (
