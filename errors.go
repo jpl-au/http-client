@@ -1,6 +1,10 @@
 package client
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jpl-au/http-client/download"
+)
 
 // Sentinel errors for request handling
 var (
@@ -28,17 +32,17 @@ var (
 	//     download.
 	//   - A download to a file that asked for no range receives a 206 partial
 	//     response, which is not the whole file.
-	ErrRangeMismatch = errors.New("response does not match the requested range")
+	ErrRangeMismatch = download.ErrRangeMismatch
 
 	// ErrDownloadIncomplete is returned when a resumed download receives a valid
 	// range that ends before the complete representation. The partial file keeps
 	// the bytes received, and resuming again continues from its end.
-	ErrDownloadIncomplete = errors.New("download incomplete")
+	ErrDownloadIncomplete = download.ErrIncomplete
 
 	// ErrDownloadInProgress is returned when a resumed download starts while
 	// another resumed download in this process uses the same partial file. The
 	// request is not sent.
-	ErrDownloadInProgress = errors.New("download already in progress")
+	ErrDownloadInProgress = download.ErrInProgress
 
 	// ErrPayloadNotReplayable is returned when a 307 or 308 redirect needs the request
 	// body again but the payload is a reader that can only be read once. Use []byte,
@@ -47,7 +51,7 @@ var (
 
 	// ErrBodyTooLarge is returned when a response body held in memory is longer
 	// than the limit set with Option.SetMaxBodySize.
-	ErrBodyTooLarge = errors.New("response body too large")
+	ErrBodyTooLarge = download.ErrBodyTooLarge
 
 	// ErrStalled is returned when no data is sent or received for longer than
 	// the timeout set with Option.SetStallTimeout.
@@ -56,5 +60,5 @@ var (
 	// ErrChecksumMismatch is returned when a downloaded body does not match
 	// the checksum set with Option.SetChecksum, or the checksum a server sent
 	// in a Repr-Digest or Content-Digest header.
-	ErrChecksumMismatch = errors.New("checksum does not match")
+	ErrChecksumMismatch = download.ErrChecksumMismatch
 )

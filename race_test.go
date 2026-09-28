@@ -67,7 +67,6 @@ func TestConcurrentAccess(t *testing.T) {
 					opt.Log("msg", "key", "value")
 					_ = opt.HasRange()
 					_ = opt.MaxRedirects()
-					_ = opt.Writer()
 					_ = opt.IdentifierType()
 					_ = opt.GenerateIdentifier()
 					_ = opt.ProgressTracking()

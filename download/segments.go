@@ -1,4 +1,4 @@
-package client
+package download
 
 import (
 	"context"
@@ -19,31 +19,14 @@ import (
 // segment of this size.
 const minSegmentSize = 1 << 20
 
-// newSegmented returns the segmented download of a request, or nil when the
-// request does not download its file in segments. A request with a body is not
-// split, because its body can be sent only once. source is the prepared body,
-// or nil when the request has none.
-func newSegmented(method string, source *payloadSource, client *http.Client, opt *options.Option, sum *checksum, start time.Time) *segmented {
-	if method != http.MethodGet ||
-		source != nil ||
-		opt.Segments <= 1 ||
-		opt.ResponseWriter.Type != options.WriteToFile ||
-		opt.Range.IsResume ||
-		opt.HasRange() {
-		return nil
-	}
-	return &segmented{client: client, opt: opt, sum: sum, start: start}
-}
-
-// segmented is a file download split into segments that download at the same
-// time. The fields up to start are set when the request starts, template just
-// before the first request is sent, and first when its response arrives. The fields after first are set
-// once that response is known to start a segmented download.
-type segmented struct {
+// Segmented is a file download split into segments that download at the same
+// time. New captures the request template before it is sent, Complete records
+// the first response, and later fields are set once segmentation is confirmed.
+// A zero value is not a usable transfer.
+type Segmented struct {
+	*standard
 	client   *http.Client
 	template *http.Request // The first request as it was before net/http sent it.
-	opt      *options.Option
-	sum      *checksum // The checksum set with SetChecksum, or nil.
 	start    time.Time
 	first    *http.Response // The response to the first request.
 
@@ -51,6 +34,12 @@ type segmented struct {
 	validator  string                 // The strong validator every segment asks for.
 	file       *os.File
 	progress   *segmentProgress
+}
+
+// Complete processes the first response and fetches any remaining segments.
+func (s *Segmented) Complete(first *http.Response, resp response.Response, start time.Time) (response.Response, error) {
+	s.start = start
+	return s.complete(first, resp)
 }
 
 // complete completes the download from the response to its first request,
@@ -61,7 +50,7 @@ type segmented struct {
 // Every later request repeats the template. Each one goes to the original
 // address, so net/http applies its redirect rules and adds the cookie jar's
 // cookies once.
-func (s *segmented) complete(first *http.Response, resp response.Response) (response.Response, error) {
+func (s *Segmented) complete(first *http.Response, resp response.Response) (response.Response, error) {
 	s.first = first
 	switch first.StatusCode {
 	case http.StatusPartialContent:
@@ -69,7 +58,7 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 		// An empty file has no first byte to ask for.
 		return s.fetchAll(resp)
 	default:
-		return processResponse(first, resp, s.opt, s.start, s.sum)
+		return processResponse(first, resp, s.standard, nil, s.start)
 	}
 
 	// Bytes the transport decoded are not byte ranges of the file.
@@ -88,12 +77,13 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 		return s.fetchAll(resp)
 	}
 
-	writer, err := s.opt.InitialiseWriter()
+	writer, err := newWriter(s.opt.ResponseWriter, false, false)
 	if err != nil {
 		closeBody(s.opt, first.Body)
 		return resp, fmt.Errorf("failed to initialise writer: %w", err)
 	}
-	file, ok := writer.(*options.FileWriter)
+	s.writer = writer
+	file, ok := writer.(*fileWriter)
 	if !ok {
 		closeBody(s.opt, first.Body)
 		return resp, errors.Join(fmt.Errorf("segmented download has writer %T, want a file", writer), writer.Close())
@@ -119,7 +109,7 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 	if err != nil {
 		return resp, errors.Join(err, file.Discard())
 	}
-	if err := file.Close(); err != nil {
+	if err := file.Publish(); err != nil {
 		return resp, err
 	}
 
@@ -131,7 +121,7 @@ func (s *segmented) complete(first *http.Response, resp response.Response) (resp
 // request, which repeats the template without its range. The response records
 // the first response until the new one replaces it, so a request that fails
 // still returns what the server sent.
-func (s *segmented) fetchAll(resp response.Response) (response.Response, error) {
+func (s *Segmented) fetchAll(resp response.Response) (response.Response, error) {
 	resp.Populate(s.first, s.start)
 	closeBody(s.opt, s.first.Body)
 	req := s.template.Clone(s.template.Context())
@@ -145,13 +135,13 @@ func (s *segmented) fetchAll(resp response.Response) (response.Response, error) 
 		}
 		return resp, err
 	}
-	return processResponse(r, resp, s.opt, s.start, s.sum)
+	return processResponse(r, resp, s.standard, nil, s.start)
 }
 
 // fetchRemaining writes the first response, and fetches the remaining bytes of the file
 // in segments that download at the same time. The first error cancels the
 // other segments.
-func (s *segmented) fetchRemaining() error {
+func (s *Segmented) fetchRemaining() error {
 	first, total := s.first, s.firstRange.Total
 	if err := s.file.Truncate(total); err != nil {
 		closeBody(s.opt, first.Body)
@@ -186,7 +176,7 @@ func (s *segmented) fetchRemaining() error {
 // the first response names, and writes them to the file. A response that is
 // not that range of that version fails with an error wrapping
 // ErrRangeMismatch.
-func (s *segmented) fetch(ctx context.Context, from, to int64) error {
+func (s *Segmented) fetch(ctx context.Context, from, to int64) error {
 	req := s.template.Clone(ctx)
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(from, 10)+"-"+strconv.FormatInt(to, 10))
 	req.Header.Set("If-Range", s.validator)
@@ -217,7 +207,7 @@ func (s *segmented) fetch(ctx context.Context, from, to int64) error {
 
 // write writes the body of r, which holds the bytes from offset from to
 // offset to, to the file at offset from, and checks its Content-Digest.
-func (s *segmented) write(r *http.Response, from, to int64) error {
+func (s *Segmented) write(r *http.Response, from, to int64) error {
 	defer closeBody(s.opt, r.Body)
 
 	var body io.Reader = r.Body
@@ -269,11 +259,11 @@ func splitSegments(from, total int64, n int) [][2]int64 {
 // error wrapping ErrRangeMismatch unless the response is unencoded and holds
 // the bytes from offset from to offset to, of total. A to or total of -1
 // accepts any value.
-func (s *segmented) parseRange(r *http.Response, from, to, total int64) (*response.ContentRange, error) {
+func (s *Segmented) parseRange(r *http.Response, from, to, total int64) (*response.ContentRange, error) {
 	if r.Uncompressed {
 		return nil, fmt.Errorf("%w: the transport decoded the segment", ErrRangeMismatch)
 	}
-	if encoding := r.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
+	if encoding := r.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("%w: segment has content encoding %q", ErrRangeMismatch, encoding)
 	}
 	cr, err := response.ParseContentRange(r.Header.Get("Content-Range"))

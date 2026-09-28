@@ -1,4 +1,4 @@
-package client
+package download
 
 import (
 	"errors"
@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jpl-au/http-client/options"
 	"github.com/jpl-au/http-client/response"
@@ -22,17 +23,20 @@ var partialFiles = struct {
 	paths map[string]bool
 }{paths: make(map[string]bool)}
 
-// resumed is a download that continues its partial file (see Option.Resume).
-type resumed struct {
-	opt *options.Option
-	sum *checksum // The checksum set with SetChecksum, or nil.
+// Resumable continues a partial file configured by Option.Resume. New prepares
+// its state; a zero value is not a usable transfer.
+type Resumable struct {
+	*standard
+	offset       int64
+	continuation bool
+	release      func()
 }
 
 // claim claims the partial file, and returns a function that releases it. It
-// returns an error wrapping ErrDownloadInProgress when another resumed
+// returns an error wrapping ErrInProgress when another resumed
 // download holds the file. The claim uses the absolute path, so it does not
 // detect one file reached through a symbolic or hard link.
-func (r *resumed) claim() (func(), error) {
+func (r *Resumable) claim() (func(), error) {
 	path, err := filepath.Abs(options.PartialPath(r.opt.ResponseWriter.FilePath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve partial file path: %w", err)
@@ -40,7 +44,7 @@ func (r *resumed) claim() (func(), error) {
 	partialFiles.Lock()
 	defer partialFiles.Unlock()
 	if partialFiles.paths[path] {
-		return nil, fmt.Errorf("%w: %s", ErrDownloadInProgress, path)
+		return nil, fmt.Errorf("%w: %s", ErrInProgress, path)
 	}
 	partialFiles.paths[path] = true
 	return func() {
@@ -61,9 +65,9 @@ func (r *resumed) claim() (func(), error) {
 //
 // Resumed downloads ask for the identity encoding, because range offsets count
 // encoded bytes and the file holds decoded ones.
-func (r *resumed) prepare() error {
+func (r *Resumable) prepare(req *http.Request) error {
 	opt := r.opt
-	opt.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Accept-Encoding", "identity")
 
 	info, err := os.Stat(options.PartialPath(opt.ResponseWriter.FilePath))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -83,11 +87,27 @@ func (r *resumed) prepare() error {
 		return nil
 	}
 
-	opt.Range.Start = info.Size()
-	opt.Range.End = -1
-	opt.Range.IsSet = true
-	opt.Header.Set("If-Range", validator)
+	r.offset = info.Size()
+	r.continuation = true
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", r.offset))
+	req.Header.Set("If-Range", validator)
 	return nil
+}
+
+// Complete processes the response and retains the partial file on an
+// interrupted transfer so a later request can continue it.
+func (r *Resumable) Complete(res *http.Response, resp response.Response, start time.Time) (response.Response, error) {
+	return processResponse(res, resp, r.standard, r, start)
+}
+
+// Close releases the partial-file claim even when writer cleanup fails.
+func (r *Resumable) Close() error {
+	err := r.standard.Close()
+	if r.release != nil {
+		r.release()
+		r.release = nil
+	}
+	return err
 }
 
 // parseRange returns the range of a partial response. It returns an error
@@ -95,9 +115,9 @@ func (r *resumed) prepare() error {
 // Content-Range that starts at the end of the partial file, and belongs to the
 // representation the file holds: no content encoding, and no ETag or
 // Last-Modified value that differs from the response that started the file.
-func (r *resumed) parseRange(res *http.Response) (*response.ContentRange, error) {
+func (r *Resumable) parseRange(res *http.Response) (*response.ContentRange, error) {
 	rc := r.opt.Range
-	if encoding := res.Header.Get(ContentEncoding); encoding != "" && encoding != "identity" {
+	if encoding := res.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("%w: body has content encoding %q", ErrRangeMismatch, encoding)
 	}
 	if err := checkVersion(res.Header, rc.ETag, rc.LastModified); err != nil {
@@ -111,8 +131,8 @@ func (r *resumed) parseRange(res *http.Response) (*response.ContentRange, error)
 	if cr.Unit != "bytes" {
 		return nil, fmt.Errorf("%w: unit is %q, not bytes", ErrRangeMismatch, cr.Unit)
 	}
-	if cr.Start != rc.Start {
-		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, rc.Start)
+	if cr.Start != r.offset {
+		return nil, fmt.Errorf("%w: range starts at %d, file ends at %d", ErrRangeMismatch, cr.Start, r.offset)
 	}
 	return cr, nil
 }
@@ -126,14 +146,14 @@ func (r *resumed) parseRange(res *http.Response) (*response.ContentRange, error)
 // A response that names another version fails and keeps the partial file. A
 // partial file longer than the file is not a copy of it, so it is removed and
 // the next resume starts again. Otherwise the partial file is published.
-func (r *resumed) complete(res *http.Response, total int64) error {
+func (r *Resumable) completePartial(res *http.Response, total int64) error {
 	rc := r.opt.Range
 	if err := checkVersion(res.Header, rc.ETag, rc.LastModified); err != nil {
 		return err
 	}
-	if total < rc.Start {
+	if total < r.offset {
 		mismatch := fmt.Errorf("%w: the partial file has %d bytes, the file has %d; resume again to start again",
-			ErrRangeMismatch, rc.Start, total)
+			ErrRangeMismatch, r.offset, total)
 		if err := os.Remove(options.PartialPath(r.opt.ResponseWriter.FilePath)); err != nil {
 			return errors.Join(mismatch, fmt.Errorf("failed to remove partial file: %w", err))
 		}
@@ -146,12 +166,13 @@ func (r *resumed) complete(res *http.Response, total int64) error {
 // after it matches the checksum set with SetChecksum, when there is one. A
 // partial file that does not match is removed, because any of its bytes can be
 // wrong.
-func (r *resumed) publish(total int64) error {
-	writer, err := r.opt.InitialiseWriter()
+func (r *Resumable) publish(total int64) error {
+	writer, err := newWriter(r.opt.ResponseWriter, true, true)
 	if err != nil {
 		return fmt.Errorf("failed to initialise writer: %w", err)
 	}
-	partial, ok := writer.(*options.PartialWriter)
+	r.writer = writer
+	partial, ok := writer.(*partialWriter)
 	if !ok {
 		return errors.Join(fmt.Errorf("resumed download has writer %T, want a partial file", writer), writer.Close())
 	}
