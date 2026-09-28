@@ -23,106 +23,105 @@ func terminalWidth() int {
 // in the terminal: the percentage completed, the speed, and the estimated time
 // remaining (ETA). Pass it to Option.OnUploadProgress or
 // Option.OnDownloadProgress. Updates are shown at most every 100 milliseconds,
-// but an update that reaches the known total is always shown.
+// but an update that reaches the known total is always shown. The progress bar
+// shrinks to fit the terminal width.
 func Terminal() func(int64, int64) {
-	var lastUpdate time.Time // Tracks the last time the progress was updated
-	var lastBytes int64      // Tracks the number of bytes processed during the last update
+	var lastUpdate time.Time // Time of the last update shown, or zero before the first.
+	var lastBytes int64      // Bytes transferred at the last update shown.
 
 	return func(bytesRead, totalBytes int64) {
 		now := time.Now()
-		// Limit updates to at least 100 milliseconds apart. The final update
-		// is always shown, because no later update will replace it.
-		final := totalBytes > 0 && bytesRead >= totalBytes
+		// A total of -1 means the size is not known. Limit updates to at least
+		// 100 milliseconds apart. The final update is always shown, because no
+		// later update will replace it.
+		known := totalBytes >= 0
+		final := known && bytesRead >= totalBytes
 		if !final && now.Sub(lastUpdate) < 100*time.Millisecond {
 			return
 		}
 
-		// The first update has no earlier sample, so its speed is unknown and
-		// it shows no ETA.
+		// The speed is measured from the last update shown, so the first update
+		// has none. When the count goes down, as when an upload starts again
+		// after a redirect, the last update no longer applies.
+		measured := !lastUpdate.IsZero() && bytesRead >= lastBytes && now.After(lastUpdate)
 		var speed float64
-		if !lastUpdate.IsZero() {
-			bytesSinceLast := bytesRead - lastBytes // Bytes processed since the last update
-			timeSinceLast := now.Sub(lastUpdate)    // Time elapsed since the last update
-			if timeSinceLast > 0 {
-				speed = float64(bytesSinceLast) / timeSinceLast.Seconds()
-			}
+		if measured {
+			speed = float64(bytesRead-lastBytes) / now.Sub(lastUpdate).Seconds()
 		}
 
-		width := terminalWidth()    // Dynamically get terminal width
-		const progressBarWidth = 50 // Fixed width for the progress bar
-
-		if totalBytes > 0 {
-			// Calculate percentage completed
-			percentage := float64(bytesRead) / float64(totalBytes) * 100
-			if bytesRead >= totalBytes {
-				percentage = 100 // Ensure exactly 100% at completion
+		var line string
+		if known {
+			percentage := 100.0
+			if bytesRead < totalBytes {
+				percentage = float64(bytesRead) / float64(totalBytes) * 100
 			}
 
-			// Estimate time remaining
-			var eta time.Duration
-			if speed > 0 && bytesRead < totalBytes {
-				remainingBytes := totalBytes - bytesRead
-				eta = time.Duration(float64(remainingBytes)/speed) * time.Second
-			}
-
-			// Format speed string
-			var speedStr string
-			switch {
-			case speed >= 1024*1024*1024:
-				speedStr = fmt.Sprintf("%.2f GB/s", speed/(1024*1024*1024))
-			case speed >= 1024*1024:
-				speedStr = fmt.Sprintf("%.2f MB/s", speed/(1024*1024))
-			case speed >= 1024:
-				speedStr = fmt.Sprintf("%.2f KB/s", speed/1024)
-			default:
-				speedStr = fmt.Sprintf("%.2f B/s", speed)
-			}
-
-			// Format ETA string
-			var etaStr string
-			if eta > 0 {
-				if eta >= time.Hour {
-					etaStr = fmt.Sprintf("%.1fh", eta.Hours())
-				} else if eta >= time.Minute {
-					etaStr = fmt.Sprintf("%.1fm", eta.Minutes())
-				} else {
-					etaStr = fmt.Sprintf("%.0fs", eta.Seconds())
+			status := "100.00% | Complete"
+			if !final {
+				status = fmt.Sprintf("%.2f%%", percentage)
+				if measured {
+					status += " | Speed: " + formatSpeed(speed)
+					if speed > 0 {
+						status += " | ETA: " + formatETA(float64(totalBytes-bytesRead)/speed)
+					}
 				}
 			}
 
-			// Generate progress bar
-			progressLength := int(float64(progressBarWidth) * (percentage / 100))
-			bar := strings.Repeat("=", progressLength) + strings.Repeat(" ", progressBarWidth-progressLength)
-
-			// Format the progress message
-			var message string
-			if percentage < 100 {
-				message = fmt.Sprintf("\r[%s] %.2f%% | Speed: %s | ETA: %s", bar, percentage, speedStr, etaStr)
-			} else {
-				message = fmt.Sprintf("\r[%s] 100.00%% | Complete", strings.Repeat("=", progressBarWidth))
-			}
-
-			// Pad the message to fill the terminal width
-			paddedMessage := message
-			padLength := width - len(message)
-			if padLength > 0 {
-				paddedMessage += strings.Repeat(" ", padLength)
-			}
-
-			// Print the padded message
-			fmt.Print(paddedMessage)
-
+			// The bar takes the width the text leaves, so the line does not
+			// wrap: "\r" can only redraw the last line of a wrapped line.
+			barWidth := min(max(terminalWidth()-1-len("[] ")-len(status), minBarWidth), maxBarWidth)
+			filled := int(float64(barWidth) * percentage / 100)
+			line = "[" + strings.Repeat("=", filled) + strings.Repeat(" ", barWidth-filled) + "] " + status
 		} else {
-			// Handle cases where the total size is unknown
-			message := fmt.Sprintf("\rTransferred %d bytes | Speed: %.2f MB/s", bytesRead, speed/(1024*1024))
-			padLength := width - len(message)
-			if padLength > 0 {
-				message += strings.Repeat(" ", padLength)
+			line = fmt.Sprintf("Transferred %d bytes", bytesRead)
+			if measured {
+				line += " | Speed: " + formatSpeed(speed)
 			}
-			fmt.Print(message)
 		}
 
-		lastUpdate = now      // Update the last update time
-		lastBytes = bytesRead // Update the last bytes processed
+		// Spaces clear what is left of a longer earlier line. The line stays one
+		// character short of the width, so the cursor does not move to the next
+		// line.
+		fmt.Print("\r" + line + strings.Repeat(" ", max(terminalWidth()-1-len(line), 0)))
+
+		lastUpdate = now
+		lastBytes = bytesRead
+	}
+}
+
+// The progress bar is at least minBarWidth and at most maxBarWidth characters
+// wide.
+const (
+	minBarWidth = 10
+	maxBarWidth = 50
+)
+
+// formatSpeed returns bytesPerSecond in B/s, KB/s, MB/s or GB/s.
+func formatSpeed(bytesPerSecond float64) string {
+	switch {
+	case bytesPerSecond >= 1024*1024*1024:
+		return fmt.Sprintf("%.2f GB/s", bytesPerSecond/(1024*1024*1024))
+	case bytesPerSecond >= 1024*1024:
+		return fmt.Sprintf("%.2f MB/s", bytesPerSecond/(1024*1024))
+	case bytesPerSecond >= 1024:
+		return fmt.Sprintf("%.2f KB/s", bytesPerSecond/1024)
+	default:
+		return fmt.Sprintf("%.2f B/s", bytesPerSecond)
+	}
+}
+
+// formatETA returns a time remaining of seconds in seconds, minutes or hours.
+// It takes seconds as a float64, because a slow transfer of a large file can
+// need more time than a time.Duration holds.
+func formatETA(seconds float64) string {
+	switch {
+	case seconds < 1:
+		return "<1s"
+	case seconds < 59.5:
+		return fmt.Sprintf("%.0fs", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("%.1fm", seconds/60)
+	default:
+		return fmt.Sprintf("%.1fh", seconds/3600)
 	}
 }
