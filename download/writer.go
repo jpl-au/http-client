@@ -159,7 +159,10 @@ func newWriter(cfg options.ResponseWriter, resume, continuation bool) (io.WriteC
 			var offset int64
 			var err error
 			if continuation {
-				file, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0)
+				// No O_APPEND: on Windows it opens the file for appending
+				// only, so Discard cannot truncate it. Seeking to the end
+				// below makes writes append instead.
+				file, err = os.OpenFile(partial, os.O_WRONLY, 0)
 				if err == nil {
 					err = matchDestinationPermissions(file, cfg.FilePath)
 					if err == nil {
