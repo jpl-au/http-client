@@ -22,23 +22,30 @@ func terminalWidth() int {
 // Func returns a progress callback that displays upload or download progress
 // in the terminal: the percentage completed, the speed, and the estimated time
 // remaining (ETA). Pass it to Option.OnUploadProgress or
-// Option.OnDownloadProgress.
+// Option.OnDownloadProgress. Updates are shown at most every 100 milliseconds,
+// but an update that reaches the known total is always shown.
 func Func() func(int64, int64) {
 	var lastUpdate time.Time // Tracks the last time the progress was updated
 	var lastBytes int64      // Tracks the number of bytes processed during the last update
 
 	return func(bytesRead, totalBytes int64) {
 		now := time.Now()
-		// Limit updates to at least 100 milliseconds apart
-		if now.Sub(lastUpdate) < 100*time.Millisecond {
+		// Limit updates to at least 100 milliseconds apart. The final update
+		// is always shown, because no later update will replace it.
+		final := totalBytes > 0 && bytesRead >= totalBytes
+		if !final && now.Sub(lastUpdate) < 100*time.Millisecond {
 			return
 		}
 
-		bytesSinceLast := bytesRead - lastBytes // Bytes processed since the last update
-		timeSinceLast := now.Sub(lastUpdate)    // Time elapsed since the last update
-		var speed float64                       // Calculate data transfer speed
-		if timeSinceLast > 0 {
-			speed = float64(bytesSinceLast) / timeSinceLast.Seconds()
+		// The first update has no earlier sample, so its speed is unknown and
+		// it shows no ETA.
+		var speed float64
+		if !lastUpdate.IsZero() {
+			bytesSinceLast := bytesRead - lastBytes // Bytes processed since the last update
+			timeSinceLast := now.Sub(lastUpdate)    // Time elapsed since the last update
+			if timeSinceLast > 0 {
+				speed = float64(bytesSinceLast) / timeSinceLast.Seconds()
+			}
 		}
 
 		width := terminalWidth()    // Dynamically get terminal width
@@ -92,7 +99,7 @@ func Func() func(int64, int64) {
 			if percentage < 100 {
 				message = fmt.Sprintf("\r[%s] %.2f%% | Speed: %s | ETA: %s", bar, percentage, speedStr, etaStr)
 			} else {
-				message = fmt.Sprintf("\r[%s] 100.00%% | Upload complete!", strings.Repeat("=", progressBarWidth))
+				message = fmt.Sprintf("\r[%s] 100.00%% | Complete", strings.Repeat("=", progressBarWidth))
 			}
 
 			// Pad the message to fill the terminal width
@@ -107,7 +114,7 @@ func Func() func(int64, int64) {
 
 		} else {
 			// Handle cases where the total size is unknown
-			message := fmt.Sprintf("\rUploaded %d bytes | Speed: %.2f MB/s", bytesRead, speed/(1024*1024))
+			message := fmt.Sprintf("\rTransferred %d bytes | Speed: %.2f MB/s", bytesRead, speed/(1024*1024))
 			padLength := width - len(message)
 			if padLength > 0 {
 				message += strings.Repeat(" ", padLength)
