@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/cookiejar"
@@ -411,6 +412,47 @@ func TestOption_SetSegments(t *testing.T) {
 		}
 		if got := server.requests(); len(got) != 1 || got[0] != "" {
 			t.Errorf("Range headers = %q, want one request with no range", got)
+		}
+		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, largefile.Bytes()) {
+			t.Errorf("file does not match the content served (error %v)", err)
+		}
+	})
+
+	// A body set with PrepareFile is a body too, even though the method gets
+	// no payload.
+	t.Run("request with prepared file is not split", func(t *testing.T) {
+		dir := t.TempDir()
+		input := filepath.Join(dir, "payload.txt")
+		if err := os.WriteFile(input, []byte("payload"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var mu sync.Mutex
+		var bodies []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("reading request body: %v", err)
+			}
+			mu.Lock()
+			bodies = append(bodies, string(body))
+			mu.Unlock()
+			w.Header().Set("ETag", `"v1"`)
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(largefile.Bytes()))
+		}))
+		t.Cleanup(server.Close)
+		path := filepath.Join(dir, "download.bin")
+
+		opt := options.New().SetFileOutput(path).SetSegments(2)
+		if err := opt.PrepareFile(input); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Get(server.URL, opt); err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) != 1 || bodies[0] != "payload" {
+			t.Errorf("request bodies = %q, want one request with body %q", bodies, "payload")
 		}
 		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, largefile.Bytes()) {
 			t.Errorf("file does not match the content served (error %v)", err)

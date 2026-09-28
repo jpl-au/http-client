@@ -20,11 +20,12 @@ import (
 const minSegmentSize = 1 << 20
 
 // newSegmented returns the segmented download of a request, or nil when the
-// request does not download its file in segments. A request with a payload is
-// not split, because its body can be sent only once.
-func newSegmented(method string, payload any, client *http.Client, opt *options.Option, sum *checksum, start time.Time) *segmented {
+// request does not download its file in segments. A request with a body is not
+// split, because its body can be sent only once. source is the prepared body,
+// or nil when the request has none.
+func newSegmented(method string, source *payloadSource, client *http.Client, opt *options.Option, sum *checksum, start time.Time) *segmented {
 	if method != http.MethodGet ||
-		payload != nil ||
+		source != nil ||
 		opt.Segments <= 1 ||
 		opt.ResponseWriter.Type != options.WriteToFile ||
 		opt.Range.IsResume ||

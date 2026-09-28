@@ -117,16 +117,18 @@ func send(method string, url string, payload any, opt *options.Option, start tim
 		}
 	}
 
-	// A segmented download's segments are counted in bytes of the file, so
-	// they must not be encoded.
-	segments := newSegmented(method, payload, client, opt, sum, start)
-	if segments != nil {
-		opt.Header.Set("Accept-Encoding", "identity")
-	}
-
+	// Prepare the payload first: PrepareFile can set a body even when the
+	// method gets no payload, and a request with a body is never split.
 	source, err := preparePayload(payload, opt)
 	if err != nil {
 		return resp, err
+	}
+
+	// A segmented download's segments are counted in bytes of the file, so
+	// they must not be encoded.
+	segments := newSegmented(method, source, client, opt, sum, start)
+	if segments != nil {
+		opt.Header.Set("Accept-Encoding", "identity")
 	}
 
 	req, err := prepareRequest(method, url, source, opt)
