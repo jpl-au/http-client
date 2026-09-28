@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	client "github.com/jpl-au/http-client"
@@ -425,31 +426,26 @@ func TestFailedRequests(t *testing.T) {
 		})
 	})
 
+	// The time a failed request took includes the time spent reading its
+	// body. The test runs on a fake clock, so the time is exact on every
+	// system.
 	t.Run("records timing", func(t *testing.T) {
-		const stall = 100 * time.Millisecond
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Error(err)
-				return
+		synctest.Test(t, func(t *testing.T) {
+			const delay = 100 * time.Millisecond
+			// The body waits, sends three bytes, waits again and fails.
+			opt := options.New().SetClient(timedClient([]string{"bad"}, delay, io.ErrUnexpectedEOF))
+
+			resp, err := client.Get("http://example.test/", opt)
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("Get() error = %v, want %v", err, io.ErrUnexpectedEOF)
 			}
-			_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nbad"))
-			time.Sleep(stall)
-			conn.Close()
-		}))
-		defer server.Close()
-
-		resp, err := client.Get(server.URL)
-		if err == nil {
-			t.Fatal("Get() error = nil, want error")
-		}
-
-		if resp.AccessTime < stall {
-			t.Errorf("AccessTime = %v, want at least %v (the time spent reading the body)", resp.AccessTime, stall)
-		}
-		if resp.ProcessedTime == 0 {
-			t.Error("ProcessedTime = 0, want a timestamp for a failed response")
-		}
+			if want := 2 * delay; resp.AccessTime != want {
+				t.Errorf("AccessTime = %v, want %v (the time spent reading the body)", resp.AccessTime, want)
+			}
+			if resp.ProcessedTime == 0 {
+				t.Error("ProcessedTime = 0, want a timestamp for a failed response")
+			}
+		})
 	})
 }
 

@@ -54,7 +54,11 @@ func TestFileWriter(t *testing.T) {
 	// instead of trying again.
 	t.Run("close keeps cleanup error", func(t *testing.T) {
 		w := newFileWriter(t, filepath.Join(t.TempDir(), "file"))
-		// Removing the staging file first makes the cleanup fail.
+		// Closing and removing the staging file first makes the cleanup fail.
+		// Windows cannot remove a file that is still open.
+		if err := w.File.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Remove(w.Name()); err != nil {
 			t.Fatal(err)
 		}

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"compress/lzw"
 	"compress/zlib"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +16,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andybalholm/brotli"
 )
@@ -322,4 +325,47 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, "Hello from path: %s", r.URL.Path)
 		}
 	}))
+}
+
+// timedBody is a response body for a test bubble, where time is fake. Each
+// read waits for delay and then returns the next chunk. After the last chunk,
+// a read waits for delay again and returns err. A read ends early with the
+// cause when ctx is cancelled.
+type timedBody struct {
+	ctx    context.Context
+	chunks []string
+	delay  time.Duration
+	err    error
+}
+
+func (b *timedBody) Read(p []byte) (int, error) {
+	select {
+	case <-b.ctx.Done():
+		return 0, context.Cause(b.ctx)
+	case <-time.After(b.delay):
+	}
+	if len(b.chunks) == 0 {
+		return 0, b.err
+	}
+	n := copy(p, b.chunks[0])
+	b.chunks = b.chunks[1:]
+	return n, nil
+}
+
+func (b *timedBody) Close() error { return nil }
+
+// timedClient returns a client whose transport answers every request with a
+// 200 response and a timedBody. It does not use the network, so it works in a
+// test bubble.
+func timedClient(chunks []string, delay time.Duration, err error) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			Status:        "200 OK",
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{},
+			ContentLength: -1,
+			Body:          &timedBody{ctx: r.Context(), chunks: slices.Clone(chunks), delay: delay, err: err},
+			Request:       r,
+		}, nil
+	})}
 }

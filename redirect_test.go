@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/history"
@@ -541,53 +543,74 @@ func TestRedirects_Replay(t *testing.T) {
 		}
 	})
 
+	// A payload that can be read only once is not sent again for a 307 or
+	// 308. The response and its copy in history keep the redirect, the error
+	// and the time the request took. The test runs on a fake clock, so the
+	// time is exact on every system.
 	t.Run("not replayable", func(t *testing.T) {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 			t.Run(strconv.Itoa(status), func(t *testing.T) {
-				server, received := newRedirectServer(t, "")
-				h := history.New()
-				c := client.New()
-				c.SetHistory(h)
-				// io.MultiReader hides Seek, so the payload can only be read once.
-				payload := io.MultiReader(strings.NewReader("payload"))
-				resp, err := c.Post(server.URL+"/redirect/"+strconv.Itoa(status), payload, options.New().EnableRedirects())
-				if !errors.Is(err, client.ErrPayloadNotReplayable) {
-					t.Fatalf("Post() error = %v, want %v", err, client.ErrPayloadNotReplayable)
-				}
-				if n := len(received()); n != 0 {
-					t.Errorf("destination received %d requests, want 0 (an empty body must not be sent in place of the payload)", n)
-				}
-				if resp.StatusCode != status {
-					t.Errorf("StatusCode = %d, want %d", resp.StatusCode, status)
-				}
-				if got := resp.Header.Get("Location"); got != "/destination" {
-					t.Errorf("Header.Get(%q) = %q, want %q", "Location", got, "/destination")
-				}
-				if !errors.Is(resp.Error, client.ErrPayloadNotReplayable) {
-					t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrPayloadNotReplayable)
-				}
-				if got := h.Len(); got != 1 {
-					t.Fatalf("Len() = %d, want 1", got)
-				}
-				stored, ok := h.Lookup(resp.UniqueIdentifier)
-				if !ok {
-					t.Fatalf("Lookup(%q) found nothing, want the stored response", resp.UniqueIdentifier)
-				}
-				if stored.StatusCode != status {
-					t.Errorf("stored StatusCode = %d, want %d", stored.StatusCode, status)
-				}
-				if got := stored.Header.Get("Location"); got != "/destination" {
-					t.Errorf("stored Header.Get(%q) = %q, want %q", "Location", got, "/destination")
-				}
-				if !errors.Is(stored.Error, client.ErrPayloadNotReplayable) {
-					t.Errorf("stored Error = %v, want %v", stored.Error, client.ErrPayloadNotReplayable)
-				}
-				if stored.AccessTime <= 0 {
-					t.Errorf("stored AccessTime = %v, want positive", stored.AccessTime)
-				}
-				if stored.ProcessedTime == 0 {
-					t.Error("stored ProcessedTime = 0, want non-zero")
-				}
+				synctest.Test(t, func(t *testing.T) {
+					const delay = 50 * time.Millisecond
+					var requests int
+					transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						requests++
+						time.Sleep(delay)
+						return &http.Response{
+							Status:     strconv.Itoa(status) + " " + http.StatusText(status),
+							StatusCode: status,
+							Header:     http.Header{"Location": {"/destination"}},
+							Body:       http.NoBody,
+							Request:    r,
+						}, nil
+					})
+					h := history.New()
+					c := client.NewCustom(&http.Client{Transport: transport})
+					c.SetHistory(h)
+					// io.MultiReader hides Seek, so the payload can only be read once.
+					payload := io.MultiReader(strings.NewReader("payload"))
+					resp, err := c.Post("http://example.test/redirect", payload, options.New().EnableRedirects())
+					if !errors.Is(err, client.ErrPayloadNotReplayable) {
+						t.Fatalf("Post() error = %v, want %v", err, client.ErrPayloadNotReplayable)
+					}
+					if requests != 1 {
+						t.Errorf("transport received %d requests, want 1 (an empty body must not be sent in place of the payload)", requests)
+					}
+					if resp.StatusCode != status {
+						t.Errorf("StatusCode = %d, want %d", resp.StatusCode, status)
+					}
+					if got := resp.Header.Get("Location"); got != "/destination" {
+						t.Errorf("Header.Get(%q) = %q, want %q", "Location", got, "/destination")
+					}
+					if !errors.Is(resp.Error, client.ErrPayloadNotReplayable) {
+						t.Errorf("Response.Error = %v, want %v", resp.Error, client.ErrPayloadNotReplayable)
+					}
+					if resp.AccessTime != delay {
+						t.Errorf("AccessTime = %v, want %v", resp.AccessTime, delay)
+					}
+					if got := h.Len(); got != 1 {
+						t.Fatalf("Len() = %d, want 1", got)
+					}
+					stored, ok := h.Lookup(resp.UniqueIdentifier)
+					if !ok {
+						t.Fatalf("Lookup(%q) found nothing, want the stored response", resp.UniqueIdentifier)
+					}
+					if stored.StatusCode != status {
+						t.Errorf("stored StatusCode = %d, want %d", stored.StatusCode, status)
+					}
+					if got := stored.Header.Get("Location"); got != "/destination" {
+						t.Errorf("stored Header.Get(%q) = %q, want %q", "Location", got, "/destination")
+					}
+					if !errors.Is(stored.Error, client.ErrPayloadNotReplayable) {
+						t.Errorf("stored Error = %v, want %v", stored.Error, client.ErrPayloadNotReplayable)
+					}
+					if stored.AccessTime != delay {
+						t.Errorf("stored AccessTime = %v, want %v", stored.AccessTime, delay)
+					}
+					if stored.ProcessedTime == 0 {
+						t.Error("stored ProcessedTime = 0, want non-zero")
+					}
+				})
 			})
 		}
 	})

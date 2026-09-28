@@ -7,15 +7,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	client "github.com/jpl-au/http-client"
 	"github.com/jpl-au/http-client/options"
 )
 
-// These tests use real time, because a test bubble cannot fake time for
-// network connections. The stall timeout is short, and every stalled server
-// waits until the test ends, well past it.
+// Most of these tests use real network connections, to show that a stall ends
+// a real read or write. A test bubble cannot fake time for network
+// connections, so they use real time. The stall timeout is short, and every
+// stalled server waits until the test ends, well past it. The exact timeout
+// test uses a fake transport, so it runs on a fake clock.
 const stallTimeout = 200 * time.Millisecond
 
 // stallOption returns an Option with the stall timeout and a context deadline
@@ -77,6 +80,38 @@ func TestOption_SetStallTimeout(t *testing.T) {
 				if elapsed := time.Since(start); elapsed > 10*stallTimeout {
 					t.Errorf("Post() returned after %v, want about %v", elapsed, stallTimeout)
 				}
+			})
+		}
+	})
+
+	// Data that arrives just inside the timeout keeps the request going, and
+	// data that arrives just outside it is too late: the request stalls at
+	// exactly the timeout.
+	t.Run("exact timeout", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			delay time.Duration // Time before each part of the body.
+			want  error
+			took  time.Duration
+		}{
+			{"data inside timeout", stallTimeout - time.Millisecond, nil, 6 * (stallTimeout - time.Millisecond)},
+			{"data outside timeout", stallTimeout + time.Millisecond, client.ErrStalled, stallTimeout},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					opt := options.New().
+						SetStallTimeout(stallTimeout).
+						SetClient(timedClient([]string{"a", "b", "c", "d", "e"}, tt.delay, io.EOF))
+
+					resp, err := client.Get("http://example.test/", opt)
+					if !errors.Is(err, tt.want) {
+						t.Fatalf("Get() error = %v, want %v", err, tt.want)
+					}
+					if resp.AccessTime != tt.took {
+						t.Errorf("AccessTime = %v, want %v", resp.AccessTime, tt.took)
+					}
+				})
 			})
 		}
 	})
